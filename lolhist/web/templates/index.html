@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Match history</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0f1115; --panel: #171a21; --panel-2: #1e222b; --line: #272c37;
+    --text: #e6e8ee; --muted: #939bad; --accent: #5b9dd9;
+    --win: #46a758; --loss: #d4484b;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f0f2f5; --line: #e0e3e9;
+      --text: #1a1d23; --muted: #666e7d; --accent: #2a6fb0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 20px 64px; }
+  h1 { font-size: 20px; margin: 0 0 2px; font-weight: 600; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 20px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
+  .card .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  .card .v { font-size: 21px; font-weight: 600; margin-top: 2px; }
+
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
+  select { background: var(--panel); color: var(--text); border: 1px solid var(--line);
+           border-radius: 8px; padding: 7px 10px; font: inherit; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 14px; flex-wrap: wrap; }
+  .tab { padding: 8px 14px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent;
+         background: none; border-top: 0; border-left: 0; border-right: 0; font: inherit; }
+  .tab.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+
+  .scroll { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 9px 12px; text-align: left; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase;
+       letter-spacing: .04em; border-bottom: 1px solid var(--line); cursor: pointer; user-select: none; }
+  tbody tr { border-top: 1px solid var(--line); }
+  tbody tr:hover { background: var(--panel-2); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .w { color: var(--win); font-weight: 600; }
+  .l { color: var(--loss); font-weight: 600; }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 999px; background: var(--panel-2);
+          border: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+  .wrbar { position: relative; height: 5px; border-radius: 3px; background: var(--loss); min-width: 56px; }
+  .wrbar > i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--win); }
+  .expand { cursor: pointer; }
+  .detail td { white-space: normal; background: var(--panel-2); }
+  .teams { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .teams ul { list-style: none; margin: 0; padding: 0; }
+  .teams li { padding: 2px 0; color: var(--muted); font-size: 12px; }
+  .teams li b { color: var(--text); font-weight: 500; }
+  .augs { margin-top: 8px; }
+  .augs .pill { margin: 0 4px 4px 0; color: var(--text); }
+  .empty { padding: 28px; text-align: center; color: var(--muted); }
+  .alert { border: 1px solid var(--loss); border-left-width: 4px; border-radius: var(--radius);
+           background: color-mix(in srgb, var(--loss) 12%, transparent);
+           padding: 12px 14px; margin-bottom: 16px; }
+  .alert h3 { margin: 0 0 4px; font-size: 14px; color: var(--loss); }
+  .alert p { margin: 2px 0; font-size: 12.5px; color: var(--text); }
+  .alert code { font-size: 12px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+  .ok-note { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .tag { color: var(--muted); font-size: 11px; }
+  .lp { color: var(--muted); font-size: 11px; margin-left: 4px; }
+  .foot { margin-top: 20px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 id="who">Match history</h1>
+  <div class="sub" id="scope">Local only — nothing here leaves this machine.</div>
+
+  <div id="alert"></div>
+  <div class="cards" id="cards"></div>
+  <div class="ok-note" id="watcher"></div>
+
+  <div class="bar">
+    <select id="f-queue"><option value="">All modes</option></select>
+    <select id="f-champ"><option value="">All champions</option></select>
+    <select id="f-days">
+      <option value="">All time</option>
+      <option value="7">Last 7 days</option>
+      <option value="30">Last 30 days</option>
+      <option value="90">Last 90 days</option>
+    </select>
+  </div>
+
+  <div class="tabs" id="tabs"></div>
+  <div class="scroll"><div id="view"></div></div>
+  <div class="foot" id="foot"></div>
+</div>
+
+<script>
+const TABS = [
+  { id: "matches",   label: "Matches" },
+  { id: "champions", label: "Champions" },
+  { id: "augments",  label: "Augments" },
+  { id: "teammates", label: "Teammates" },
+];
+let current = "matches";
+let sortBy = {};
+
+const $ = (s) => document.querySelector(s);
+const esc = (v) => String(v ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+const num = (v, d = 0) => (v === null || v === undefined ? "—" : Number(v).toFixed(d));
+
+function params() {
+  const p = new URLSearchParams();
+  const q = $("#f-queue").value, c = $("#f-champ").value, d = $("#f-days").value;
+  if (q) p.set("queue", q);
+  if (c) p.set("champion", c);
+  if (d) p.set("days", d);
+  return p.toString();
+}
+const api = (path) => fetch(`/api/${path}${path.includes("?") ? "&" : "?"}${params()}`).then(r => r.json());
+
+function wrBar(rate) {
+  const pct = Math.max(0, Math.min(100, Number(rate) || 0));
+  return `<div class="wrbar"><i style="width:${pct}%"></i></div>`;
+}
+function titleCase(s) {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : "";
+}
+
+// "Emerald II". Classic uses its own tier names (Salt, Wood...) — same shape.
+function rankText(p) {
+  if (!p || !p.tier) return null;
+  const div = p.division && p.division !== "NA" ? " " + p.division : "";
+  return titleCase(p.tier) + div;
+}
+
+function rankCell(p) {
+  const text = rankText(p);
+  if (!text) return '<span class="muted">Unranked</span>';
+  // An asterisk means the rank is current, not what they held at the time.
+  const approx = p.rank_at_match ? "" : "*";
+  const lp = p.league_points != null ? ` ${p.league_points} LP` : "";
+  return `${esc(text)}${approx}<span class="lp">${lp}</span>`;
+}
+
+function lpCell(r) {
+  if (r.my_lp_delta === null || r.my_lp_delta === undefined) return "—";
+  const v = Number(r.my_lp_delta);
+  return `<span class="${v >= 0 ? "w" : "l"}">${v > 0 ? "+" : ""}${v}</span>`;
+}
+
+function duration(s) {
+  if (!s) return "—";
+  const m = Math.floor(s / 60);
+  return `${m}:${String(s % 60).padStart(2, "0")}`;
+}
+function when(ms) {
+  if (!ms) return "—";
+  const d = new Date(Number(ms));
+  return d.toLocaleDateString(undefined, { day: "2-digit", month: "short" }) + " " +
+         d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+function table(cols, rows, opts = {}) {
+  if (!rows.length) return `<div class="empty">${opts.empty || "Nothing here yet."}</div>`;
+  const key = sortBy[current];
+  if (key) {
+    const dir = key.desc ? -1 : 1;
+    rows = [...rows].sort((a, b) => {
+      const x = a[key.col], y = b[key.col];
+      if (typeof x === "number" && typeof y === "number") return (x - y) * dir;
+      return String(x ?? "").localeCompare(String(y ?? "")) * dir;
+    });
+  }
+  const head = cols.map(c => `<th class="${c.num ? "num" : ""}" data-col="${c.key}">${c.label}</th>`).join("");
+  const body = rows.map((r, i) => {
+    const cells = cols.map(c => `<td class="${c.num ? "num" : ""}">${c.render ? c.render(r) : esc(r[c.key])}</td>`).join("");
+    const extra = opts.detail ? opts.detail(r, i) : "";
+    return `<tr class="${opts.detail ? "expand" : ""}" data-i="${i}">${cells}</tr>${extra}`;
+  }).join("");
+  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+const COLS = {
+  matches: [
+    { key: "game_creation_ms", label: "When", render: r => when(r.game_creation_ms) },
+    { key: "queue_name", label: "Mode", render: r => `<span class="pill">${esc(r.queue_name || r.game_mode || "?")}</span>` },
+    { key: "champion_name", label: "Champion" },
+    { key: "win", label: "Result", render: r =>
+        r.placement ? `<span class="pill">#${r.placement}</span>`
+                    : (r.win ? '<span class="w">Win</span>' : '<span class="l">Loss</span>') },
+    { key: "my_rank", label: "Rank", render: r => rankCell(r.my_rank) },
+    { key: "my_lp_delta", label: "LP", num: true, render: lpCell },
+    { key: "kills", label: "K / D / A", num: true, render: r => `${r.kills}/${r.deaths}/${r.assists}` },
+    { key: "cs", label: "CS", num: true },
+    { key: "damage_to_champions", label: "Damage", num: true, render: r => (r.damage_to_champions ?? 0).toLocaleString() },
+    { key: "game_duration_s", label: "Length", num: true, render: r => duration(r.game_duration_s) },
+    { key: "source", label: "Src", render: r => `<span class="pill">${esc(r.source)}</span>` },
+  ],
+  champions: [
+    { key: "champion_name", label: "Champion" },
+    { key: "games", label: "Games", num: true },
+    { key: "wins", label: "W", num: true },
+    { key: "losses", label: "L", num: true },
+    { key: "win_rate", label: "Win rate", num: true, render: r => `${num(r.win_rate, 1)}%` },
+    { key: "win_rate", label: "", render: r => wrBar(r.win_rate) },
+    { key: "avg_kills", label: "Avg KDA", num: true, render: r => `${num(r.avg_kills,1)}/${num(r.avg_deaths,1)}/${num(r.avg_assists,1)}` },
+    { key: "avg_cs", label: "Avg CS", num: true },
+    { key: "avg_damage", label: "Avg dmg", num: true, render: r => Number(r.avg_damage || 0).toLocaleString() },
+  ],
+  augments: [
+    { key: "augment_name", label: "Augment" },
+    { key: "games", label: "Picked", num: true },
+    { key: "wins", label: "W", num: true },
+    { key: "losses", label: "L", num: true },
+    { key: "win_rate", label: "Win rate", num: true, render: r => `${num(r.win_rate, 1)}%` },
+    { key: "win_rate", label: "", render: r => wrBar(r.win_rate) },
+    { key: "avg_kills", label: "Avg KDA", num: true, render: r => `${num(r.avg_kills,1)}/${num(r.avg_deaths,1)}/${num(r.avg_assists,1)}` },
+  ],
+  teammates: [
+    { key: "name", label: "Player", render: r =>
+        esc(r.name) + (r.tagline ? `<span class="tag">#${esc(r.tagline)}</span>` : "") },
+    { key: "solo_rank", label: "Solo/Duo", render: r =>
+        rankText({ tier: r.solo_tier, division: r.solo_division }) || '<span class="muted">—</span>' },
+    { key: "classic_rank", label: "Classic", render: r =>
+        rankText({ tier: r.classic_tier, division: r.classic_division }) || '<span class="muted">—</span>' },
+    { key: "games", label: "Games", num: true },
+    { key: "wins", label: "W", num: true },
+    { key: "losses", label: "L", num: true },
+    { key: "win_rate", label: "Win rate", num: true, render: r => `${num(r.win_rate, 1)}%` },
+    { key: "win_rate", label: "", render: r => wrBar(r.win_rate) },
+    { key: "last_played_ms", label: "Last played", render: r => when(r.last_played_ms) },
+  ],
+};
+
+function playerLine(p) {
+  const tag = p.riot_id_tagline ? `<span class="tag">#${esc(p.riot_id_tagline)}</span>` : "";
+  const name = esc(p.riot_id_game_name || p.summoner_name || "?");
+  const rank = rankText(p);
+  const badge = rank
+    ? `<span class="pill"${p.rank_at_match ? "" : ' title="Current rank — this game predates rank capture"'}>` +
+      `${esc(rank)}${p.rank_at_match ? "" : "*"}${p.league_points != null ? " · " + p.league_points + " LP" : ""}</span>`
+    : "";
+  return `<li><b>${esc(p.champion_name || "?")}</b> — ${name}${tag}
+    · ${p.kills}/${p.deaths}/${p.assists} ${badge}</li>`;
+}
+
+function matchDetail(r, i) {
+  const side = (id) => (r.team || []).filter(p => p.team_id === id).map(playerLine).join("");
+  const augs = (r.augments || []).filter(Boolean);
+  const ladder = r.rank_queue_type === "JADE_RANKED_SOLO_5x5" ? "Classic ladder" : "Solo/Duo";
+  const anyApprox = (r.team || []).some(p => p.tier && !p.rank_at_match);
+  return `<tr class="detail" data-detail="${i}" hidden><td colspan="11">
+    ${augs.length ? `<div class="augs"><b>Augments:</b> ${augs.map(a => `<span class="pill">${esc(a)}</span>`).join(" ")}</div>` : ""}
+    <div class="muted" style="margin-top:8px">Ranks shown for: <b>${ladder}</b></div>
+    <div class="teams" style="margin-top:6px">
+      <div><b>Team 100</b><ul>${side(100)}</ul></div>
+      <div><b>Team 200</b><ul>${side(200)}</ul></div>
+    </div>
+    ${anyApprox ? '<div class="muted" style="margin-top:8px">* current rank — this game was imported from history, which cannot say what anyone was ranked at the time.</div>' : ""}
+    </td></tr>`;
+}
+
+async function render() {
+  $("#tabs").innerHTML = TABS.map(t =>
+    `<button class="tab ${t.id === current ? "on" : ""}" data-tab="${t.id}">${t.label}</button>`).join("");
+
+  const view = $("#view");
+  view.innerHTML = '<div class="empty">Loading…</div>';
+
+  if (current === "matches") {
+    const rows = await api("matches?limit=300");
+    view.innerHTML = table(COLS.matches, rows, {
+      detail: matchDetail,
+      empty: "No matches stored. Run <code>backfill</code> with the client open.",
+    });
+    view.querySelectorAll("tr.expand").forEach(tr => tr.onclick = () => {
+      const d = view.querySelector(`tr[data-detail="${tr.dataset.i}"]`);
+      if (d) d.hidden = !d.hidden;
+    });
+  } else if (current === "augments") {
+    const rows = await api("augments");
+    view.innerHTML = table(COLS.augments, rows, {
+      empty: "No augments recorded yet — play an ARAM: Mayhem game.",
+    });
+  } else if (current === "teammates") {
+    const rows = await api("teammates?min_games=2");
+    view.innerHTML = table(COLS.teammates, rows, { empty: "Nobody seen twice yet." });
+  } else {
+    const rows = await api("champions");
+    view.innerHTML = table(COLS.champions, rows, { empty: "No champions yet." });
+  }
+
+  view.querySelectorAll("th[data-col]").forEach(th => th.onclick = () => {
+    const col = th.dataset.col;
+    const prev = sortBy[current];
+    sortBy[current] = { col, desc: !(prev && prev.col === col && prev.desc) };
+    render();
+  });
+
+  $("#tabs").querySelectorAll(".tab").forEach(b => b.onclick = () => { current = b.dataset.tab; render(); });
+}
+
+async function refreshSummary() {
+  const { summary, account } = await api("summary");
+  if (account) {
+    $("#who").textContent = `${account.riot_id_game_name || "Match history"}${account.riot_id_tagline ? "#" + account.riot_id_tagline : ""}`;
+  }
+  const games = summary.games || 0, wins = summary.wins || 0;
+  const wr = games ? (100 * wins / games).toFixed(1) : "0.0";
+  const hours = ((summary.seconds || 0) / 3600).toFixed(1);
+  const kda = summary.deaths ? ((summary.kills + summary.assists) / summary.deaths).toFixed(2) : "—";
+  $("#cards").innerHTML = [
+    ["Games", games], ["Record", `${wins}W ${games - wins}L`], ["Win rate", `${wr}%`],
+    ["KDA", kda], ["Time played", `${hours}h`],
+  ].map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+}
+
+function ago(iso) {
+  if (!iso) return null;
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  return hrs < 24 ? `${hrs}h ago` : `${Math.floor(hrs / 24)}d ago`;
+}
+
+// A watcher that fails silently is worse than one that crashes, so its state
+// gets its own banner rather than living only in the log.
+async function refreshHealth() {
+  const h = await fetch("/api/health").then(r => r.json()).catch(() => null);
+  if (!h) return;
+
+  if (h.degraded) {
+    const err = h.last_error || {};
+    $("#alert").innerHTML = `<div class="alert">
+      <h3>Games are not being recorded</h3>
+      <p>${h.consecutive_failures} capture${h.consecutive_failures === 1 ? "" : "s"} failed in a row.
+         Anything you play now is missing from this page.</p>
+      <p><b>${esc(err.kind || "Error")}:</b> ${esc(err.message || "unknown")}</p>
+      <p>Restart the watcher, then run <code>lolhist doctor</code>.</p>
+    </div>`;
+  } else {
+    $("#alert").innerHTML = "";
+  }
+
+  const seen = ago(h.last_seen_at), caught = ago(h.last_capture_at);
+  $("#watcher").textContent = h.captures_ok || h.captures_failed || seen
+    ? `Watcher: ${h.captures_ok} captured, ${h.captures_failed} failed` +
+      (caught ? ` · last catch ${caught}` : " · nothing captured yet") +
+      (seen ? ` · last seen ${seen}` : "")
+    : "Watcher has not run yet — matches here come from history backfill.";
+}
+
+async function boot() {
+  const f = await fetch("/api/filters").then(r => r.json());
+  $("#f-queue").innerHTML = '<option value="">All modes</option>' +
+    f.queues.map(q => `<option value="${q.queue_id}">${esc(q.queue_name)} (${q.games})</option>`).join("");
+  // League Classic ships its own champion ids, offset by 60000 — so the same
+  // name legitimately appears twice. Labelling them stops that reading as a bug.
+  $("#f-champ").innerHTML = '<option value="">All champions</option>' +
+    f.champions.map(c => {
+      const suffix = c.champion_id >= 60000 ? " [Classic]" : "";
+      return `<option value="${c.champion_id}">${esc(c.champion_name)}${suffix} (${c.games})</option>`;
+    }).join("");
+
+  ["#f-queue", "#f-champ", "#f-days"].forEach(sel =>
+    $(sel).onchange = () => { refreshSummary(); render(); });
+
+  await refreshSummary();
+  await refreshHealth();
+  await render();
+  setInterval(refreshHealth, 30000);
+  $("#foot").textContent = "Read-only view of data/history.db. No outbound network calls.";
+}
+boot();
+</script>
+</body>
+</html>
