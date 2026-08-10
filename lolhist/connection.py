@@ -29,6 +29,10 @@ log = logging.getLogger(__name__)
 # launcher. Checking both makes the fallback resilient to Riot moving the flags.
 CLIENT_PROCESSES = ("LeagueClientUx.exe", "LeagueClient.exe")
 
+# Keeps a spawned helper from opening a console window. Only exists on Windows;
+# zero is the "no special flags" default everywhere else.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 
 class ClientUnavailable(RuntimeError):
     """The League Client is not running, or is not reachable on its API port."""
@@ -143,6 +147,10 @@ def read_process_args() -> Credentials | None:
             capture_output=True,
             text=True,
             timeout=15,
+            # Without this the packaged app — which has no console of its own —
+            # flashes a PowerShell window on screen every time this runs, which
+            # is on every reconnect attempt while the client is closed.
+            creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         log.debug("process lookup failed: %s", exc)
@@ -181,6 +189,19 @@ def iter_credentials():
         yield from_process
 
 
+def describe_search() -> str:
+    """Where discovery looked, for an error message.
+
+    Pure string building — it must not repeat the search itself, or reporting a
+    failure would cost another process lookup.
+    """
+    searched = ", ".join(str(p) for p in lockfile_candidates()) or "no known install"
+    return (
+        "No League Client credentials found. Looked for a lockfile in "
+        f"{searched} and for a running client process. Is the client open?"
+    )
+
+
 def discover() -> Credentials:
     """The first available credentials.
 
@@ -190,9 +211,4 @@ def discover() -> Credentials:
     for credentials in iter_credentials():
         log.debug("discovered credentials via %s", credentials.origin)
         return credentials
-
-    searched = ", ".join(str(p) for p in lockfile_candidates()) or "no known install"
-    raise ClientUnavailable(
-        "No League Client credentials found. Looked for a lockfile in "
-        f"{searched} and for a running client process. Is the client open?"
-    )
+    raise ClientUnavailable(describe_search())

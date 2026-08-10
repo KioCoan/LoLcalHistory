@@ -9,7 +9,13 @@ from typing import Any
 import httpx
 
 from . import config
-from .connection import ClientUnavailable, Credentials, discover, iter_credentials
+from .connection import (
+    ClientUnavailable,
+    Credentials,
+    describe_search,
+    discover,
+    iter_credentials,
+)
 
 log = logging.getLogger(__name__)
 
@@ -128,8 +134,10 @@ def connect() -> LcuClient:
         return client
 
     if not tried:
-        # No credentials at all: let discover() explain where it looked.
-        discover()
+        # Deliberately not calling discover() to build this message: it would
+        # re-run the whole search, including the process lookup that spawns a
+        # helper — a second flash of a window on an already-failing attempt.
+        raise ClientUnavailable(describe_search())
 
     raise ClientUnavailable(
         "Found League Client credentials but none of them worked:\n  "
