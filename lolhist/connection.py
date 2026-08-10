@@ -14,6 +14,7 @@ Two things about that file matter enough to be worth stating plainly:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import subprocess
@@ -54,9 +55,52 @@ class Credentials:
         return f"Credentials(port={self.port}, origin={self.origin!r}, password=<redacted>)"
 
 
+def installed_league_dirs() -> list[Path]:
+    """Where League is installed on this machine, best source first.
+
+    Read from Riot's own install record rather than assumed, so a friend who
+    installed to D: works without editing anything. Deliberately not a
+    filesystem scan: an abandoned older install still contains a lockfile, and
+    scanning would happily find it.
+    """
+    found: list[Path] = []
+
+    try:
+        raw = config.RIOT_INSTALLS_JSON.read_text(encoding="utf-8")
+        installs = json.loads(raw)
+    except (OSError, ValueError):
+        installs = {}
+
+    associated = installs.get("associated_client")
+    if isinstance(associated, dict):
+        for install_path in associated:
+            # Riot writes these with forward slashes.
+            candidate = Path(str(install_path).replace("/", "\\"))
+            if candidate.is_dir() and candidate not in found:
+                found.append(candidate)
+
+    for candidate in config.FALLBACK_INSTALL_DIRS:
+        if candidate.is_dir() and candidate not in found:
+            found.append(candidate)
+
+    return found
+
+
+def lockfile_candidates() -> list[Path]:
+    """Every lockfile path worth trying, in priority order."""
+    if config.LOCKFILE_OVERRIDE:
+        return [Path(config.LOCKFILE_OVERRIDE)]
+    return [directory / "lockfile" for directory in installed_league_dirs()]
+
+
 def read_lockfile(path: Path | None = None) -> Credentials | None:
-    """Parse the lockfile, or return None if it is missing or malformed."""
-    path = path or config.LOCKFILE_PATH
+    """Parse a lockfile, or return None if it is missing or malformed."""
+    if path is None:
+        for candidate in lockfile_candidates():
+            credentials = read_lockfile(candidate)
+            if credentials is not None:
+                return credentials
+        return None
     try:
         raw = path.read_text(encoding="utf-8").strip()
     except OSError as exc:
@@ -116,19 +160,39 @@ def _first_match(pattern: str, text: str) -> str | None:
     return match.group(1) if match else None
 
 
-def discover() -> Credentials:
-    """Locate the client's API credentials, lockfile first then process args.
+def iter_credentials():
+    """Every set of credentials worth trying, best first.
 
-    Succeeding here means only that credentials were found. It does not mean the
-    client is running — that requires a live probe.
+    More than one can turn up — a second install, or a lockfile left behind by
+    a client that has since closed — so the caller probes each rather than
+    trusting the first. That is what makes a stale lockfile harmless instead of
+    fatal.
     """
-    for source in (read_lockfile, read_process_args):
-        creds = source()
-        if creds is not None:
-            log.debug("discovered credentials via %s", creds.origin)
-            return creds
+    seen: set[tuple] = set()
+
+    for candidate in lockfile_candidates():
+        credentials = read_lockfile(candidate)
+        if credentials is not None and credentials.port not in seen:
+            seen.add(credentials.port)
+            yield credentials
+
+    from_process = read_process_args()
+    if from_process is not None and from_process.port not in seen:
+        yield from_process
+
+
+def discover() -> Credentials:
+    """The first available credentials.
+
+    Finding them does not mean the client is running — only a live probe can
+    say that.
+    """
+    for credentials in iter_credentials():
+        log.debug("discovered credentials via %s", credentials.origin)
+        return credentials
+
+    searched = ", ".join(str(p) for p in lockfile_candidates()) or "no known install"
     raise ClientUnavailable(
-        f"No League Client credentials found. Looked for a lockfile at "
-        f"{config.LOCKFILE_PATH} and for a running client process. "
-        "Is the client open?"
+        "No League Client credentials found. Looked for a lockfile in "
+        f"{searched} and for a running client process. Is the client open?"
     )

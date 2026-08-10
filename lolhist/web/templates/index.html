@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Match history</title>
+<title>LoLcal History</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -73,12 +73,31 @@
   .muted { color: var(--muted); font-size: 12px; }
   .tag { color: var(--muted); font-size: 11px; }
   .lp { color: var(--muted); font-size: 11px; margin-left: 4px; }
+
+  button#refresh {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 12px; font: inherit; cursor: pointer;
+  }
+  button#refresh:hover { background: var(--panel-2); }
+  button#refresh:disabled { opacity: .6; cursor: default; }
+  .spin {
+    width: 12px; height: 12px; border-radius: 50%; display: inline-block;
+    border: 2px solid var(--line); border-top-color: var(--accent);
+  }
+  /* Only animate while a refresh is actually running. */
+  button#refresh.busy .spin { animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    button#refresh.busy .spin { animation: none; border-top-color: var(--text); }
+  }
+  .updated { color: var(--muted); font-size: 12px; }
   .foot { margin-top: 20px; color: var(--muted); font-size: 12px; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1 id="who">Match history</h1>
+  <h1 id="who">LoLcal History</h1>
   <div class="sub" id="scope">Local only — nothing here leaves this machine.</div>
 
   <div id="alert"></div>
@@ -94,6 +113,10 @@
       <option value="30">Last 30 days</option>
       <option value="90">Last 90 days</option>
     </select>
+    <button id="refresh" type="button" title="Refresh now (F5)">
+      <span class="spin" aria-hidden="true"></span>Refresh
+    </button>
+    <span class="updated" id="updated"></span>
   </div>
 
   <div class="tabs" id="tabs"></div>
@@ -180,9 +203,12 @@ function table(cols, rows, opts = {}) {
   }
   const head = cols.map(c => `<th class="${c.num ? "num" : ""}" data-col="${c.key}">${c.label}</th>`).join("");
   const body = rows.map((r, i) => {
+    // Keyed by identity, not position. A new game arriving at the top shifts
+    // every index, which would move an expanded row onto a different match.
+    const key = opts.key ? opts.key(r) : String(i);
     const cells = cols.map(c => `<td class="${c.num ? "num" : ""}">${c.render ? c.render(r) : esc(r[c.key])}</td>`).join("");
-    const extra = opts.detail ? opts.detail(r, i) : "";
-    return `<tr class="${opts.detail ? "expand" : ""}" data-i="${i}">${cells}</tr>${extra}`;
+    const extra = opts.detail ? opts.detail(r, key) : "";
+    return `<tr class="${opts.detail ? "expand" : ""}" data-key="${esc(key)}">${cells}</tr>${extra}`;
   }).join("");
   return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
@@ -251,12 +277,12 @@ function playerLine(p) {
     · ${p.kills}/${p.deaths}/${p.assists} ${badge}</li>`;
 }
 
-function matchDetail(r, i) {
+function matchDetail(r, key) {
   const side = (id) => (r.team || []).filter(p => p.team_id === id).map(playerLine).join("");
   const augs = (r.augments || []).filter(Boolean);
   const ladder = r.rank_queue_type === "JADE_RANKED_SOLO_5x5" ? "Classic ladder" : "Solo/Duo";
   const anyApprox = (r.team || []).some(p => p.tier && !p.rank_at_match);
-  return `<tr class="detail" data-detail="${i}" hidden><td colspan="11">
+  return `<tr class="detail" data-detail="${esc(key)}" hidden><td colspan="11">
     ${augs.length ? `<div class="augs"><b>Augments:</b> ${augs.map(a => `<span class="pill">${esc(a)}</span>`).join(" ")}</div>` : ""}
     <div class="muted" style="margin-top:8px">Ranks shown for: <b>${ladder}</b></div>
     <div class="teams" style="margin-top:6px">
@@ -267,22 +293,34 @@ function matchDetail(r, i) {
     </td></tr>`;
 }
 
-async function render() {
+// Which match rows are open, by game id, so a refresh does not collapse them.
+const expanded = new Set();
+
+async function render({ silent = false } = {}) {
   $("#tabs").innerHTML = TABS.map(t =>
     `<button class="tab ${t.id === current ? "on" : ""}" data-tab="${t.id}">${t.label}</button>`).join("");
 
   const view = $("#view");
-  view.innerHTML = '<div class="empty">Loading…</div>';
+  // A background refresh must not blank the table you are reading.
+  if (!silent) view.innerHTML = '<div class="empty">Loading…</div>';
+  const scrollY = window.scrollY;
 
   if (current === "matches") {
     const rows = await api("matches?limit=300");
     view.innerHTML = table(COLS.matches, rows, {
       detail: matchDetail,
+      key: r => String(r.game_id),
       empty: "No matches stored. Run <code>backfill</code> with the client open.",
     });
-    view.querySelectorAll("tr.expand").forEach(tr => tr.onclick = () => {
-      const d = view.querySelector(`tr[data-detail="${tr.dataset.i}"]`);
-      if (d) d.hidden = !d.hidden;
+    view.querySelectorAll("tr.expand").forEach(tr => {
+      const key = tr.dataset.key;
+      const detail = view.querySelector(`tr[data-detail="${CSS.escape(key)}"]`);
+      if (detail && expanded.has(key)) detail.hidden = false;
+      tr.onclick = () => {
+        if (!detail) return;
+        detail.hidden = !detail.hidden;
+        if (detail.hidden) expanded.delete(key); else expanded.add(key);
+      };
     });
   } else if (current === "augments") {
     const rows = await api("augments");
@@ -305,12 +343,15 @@ async function render() {
   });
 
   $("#tabs").querySelectorAll(".tab").forEach(b => b.onclick = () => { current = b.dataset.tab; render(); });
+
+  // Re-rendering resets scroll to the top; put the reader back where they were.
+  if (silent && window.scrollY !== scrollY) window.scrollTo(0, scrollY);
 }
 
 async function refreshSummary() {
   const { summary, account } = await api("summary");
   if (account) {
-    $("#who").textContent = `${account.riot_id_game_name || "Match history"}${account.riot_id_tagline ? "#" + account.riot_id_tagline : ""}`;
+    $("#who").textContent = `${account.riot_id_game_name || "LoLcal History"}${account.riot_id_tagline ? "#" + account.riot_id_tagline : ""}`;
   }
   const games = summary.games || 0, wins = summary.wins || 0;
   const wr = games ? (100 * wins / games).toFixed(1) : "0.0";
@@ -358,26 +399,92 @@ async function refreshHealth() {
     : "Watcher has not run yet — matches here come from history backfill.";
 }
 
-async function boot() {
+// Rebuilt on refresh so a newly played champion or mode appears in the filters,
+// while keeping whatever you had selected.
+async function refreshFilters() {
   const f = await fetch("/api/filters").then(r => r.json());
-  $("#f-queue").innerHTML = '<option value="">All modes</option>' +
+  const queue = $("#f-queue"), champ = $("#f-champ");
+  const keepQueue = queue.value, keepChamp = champ.value;
+
+  queue.innerHTML = '<option value="">All modes</option>' +
     f.queues.map(q => `<option value="${q.queue_id}">${esc(q.queue_name)} (${q.games})</option>`).join("");
   // League Classic ships its own champion ids, offset by 60000 — so the same
   // name legitimately appears twice. Labelling them stops that reading as a bug.
-  $("#f-champ").innerHTML = '<option value="">All champions</option>' +
+  champ.innerHTML = '<option value="">All champions</option>' +
     f.champions.map(c => {
       const suffix = c.champion_id >= 60000 ? " [Classic]" : "";
       return `<option value="${c.champion_id}">${esc(c.champion_name)}${suffix} (${c.games})</option>`;
     }).join("");
 
+  queue.value = keepQueue;
+  champ.value = keepChamp;
+}
+
+const REFRESH_MS = 30000;
+let lastRefresh = null;
+let refreshing = false;
+
+function paintUpdated() {
+  if (!lastRefresh) return;
+  const secs = Math.round((Date.now() - lastRefresh) / 1000);
+  $("#updated").textContent =
+    secs < 5 ? "updated just now" : secs < 60 ? `updated ${secs}s ago`
+    : `updated ${Math.floor(secs / 60)}m ago`;
+}
+
+async function refreshAll({ silent = true } = {}) {
+  if (refreshing) return;          // never stack a manual click onto the timer
+  refreshing = true;
+  const button = $("#refresh");
+  button.classList.add("busy");
+  button.disabled = true;
+  try {
+    await Promise.all([refreshFilters(), refreshSummary(), refreshHealth()]);
+    await render({ silent });
+    lastRefresh = Date.now();
+    paintUpdated();
+  } catch (err) {
+    // The window has no address bar to reload from, so a failed refresh has to
+    // say so rather than just leaving stale numbers on screen.
+    $("#updated").textContent = "refresh failed — is the app still running?";
+    console.error(err);
+  } finally {
+    refreshing = false;
+    button.classList.remove("busy");
+    button.disabled = false;
+  }
+}
+
+async function boot() {
+  await refreshFilters();
+
   ["#f-queue", "#f-champ", "#f-days"].forEach(sel =>
     $(sel).onchange = () => { refreshSummary(); render(); });
+
+  $("#refresh").onclick = () => refreshAll({ silent: false });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "F5" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r")) {
+      e.preventDefault();
+      refreshAll({ silent: false });
+    }
+  });
 
   await refreshSummary();
   await refreshHealth();
   await render();
-  setInterval(refreshHealth, 30000);
-  $("#foot").textContent = "Read-only view of data/history.db. No outbound network calls.";
+  lastRefresh = Date.now();
+  paintUpdated();
+
+  // Skipped while the window is hidden in the tray — there is nobody to show it
+  // to, and it would keep waking the database for no reason.
+  setInterval(() => { if (!document.hidden) refreshAll(); }, REFRESH_MS);
+  setInterval(paintUpdated, 5000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refreshAll();
+  });
+
+  $("#foot").textContent =
+    `Read-only view of your local history. Auto-refreshes every ${REFRESH_MS / 1000}s. No outbound network calls.`;
 }
 boot();
 </script>

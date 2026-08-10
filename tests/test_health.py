@@ -123,6 +123,24 @@ class TestCaptureFaultContainment:
         asyncio.run(watcher._capture(client=client, static=StaticData()))
         assert watcher._capturing is False
 
+    def test_no_miss_is_logged_for_a_game_already_captured(self, watcher, client, monkeypatch):
+        """The client fires end-of-game repeatedly. Retrying a game that is
+        already stored, and finding the stats block gone, is not a miss."""
+
+        async def no_payload(_client):
+            return None
+
+        async def no_sleep(_seconds):
+            return None
+
+        watcher._captured_this_cycle = True
+        watcher._fetch_eog = no_payload
+        monkeypatch.setattr(asyncio, "sleep", no_sleep)
+
+        asyncio.run(watcher._capture(client=client, static=StaticData()))
+
+        assert health.load().get("captures_missed", 0) == 0
+
     def test_missing_payload_is_reported_as_missed(self, watcher, client, monkeypatch):
         async def no_payload(_client):
             return None

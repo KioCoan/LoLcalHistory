@@ -19,8 +19,13 @@ CREATE TABLE IF NOT EXISTS matches (
     source_rank       INTEGER NOT NULL DEFAULT 0,
     captured_at       TEXT    NOT NULL,
     raw_path          TEXT,
-    -- Your own rank movement for this game, filled in shortly after it ends.
+    -- Your own rank movement for this game. The "before" half is written the
+    -- moment the game is captured, so the delta can still be worked out later
+    -- even if the app is closed before the new LP lands.
     my_rank_queue     TEXT,
+    my_lp_before      INTEGER,
+    my_tier_before    TEXT,
+    my_division_before TEXT,
     my_lp_delta       INTEGER,
     my_lp_after       INTEGER,
     my_tier_after     TEXT,

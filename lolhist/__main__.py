@@ -9,7 +9,7 @@ import sys
 from . import backfill as backfill_mod
 from . import config, health, probe, ranked, static_data, store
 from .client import connect
-from .connection import ClientUnavailable, read_lockfile
+from .connection import ClientUnavailable, installed_league_dirs, read_lockfile
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -39,12 +39,18 @@ def _print_health() -> bool:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    print(f"Lockfile   : {config.LOCKFILE_PATH}")
+    installs = installed_league_dirs()
+    print("Install    : " + (str(installs[0]) if installs else "NOT FOUND"))
+    for extra in installs[1:]:
+        print(f"             also: {extra}")
+    if not installs:
+        print(f"             checked {config.RIOT_INSTALLS_JSON} and the usual folders")
+
     creds = read_lockfile()
     if creds is None:
-        print("             not found or unreadable")
+        print("Lockfile   : not found or unreadable")
     else:
-        print(f"             parsed, port {creds.port} (pid {creds.pid})")
+        print(f"Lockfile   : parsed, port {creds.port} (pid {creds.pid})")
 
     try:
         client = connect()
@@ -174,6 +180,10 @@ def cmd_ranks(args: argparse.Namespace) -> int:
         results = ranked.fetch_many(client, targets)
         written = store.save_player_ranks(conn, results)
 
+    derived = store.derive_lp_from_snapshots(conn)
+    if derived:
+        print(f"\nWorked out the LP change for {derived} earlier game(s) from stored snapshots.")
+
     got_a_tier = sum(
         1 for ranks in results.values() if any(r.is_ranked for r in ranks.values())
     )
@@ -213,6 +223,55 @@ def cmd_resolve_names(args: argparse.Namespace) -> int:
             print(f"  still unresolved: {label} = {count}")
     conn.close()
     return 0
+
+
+def cmd_migrate_data(args: argparse.Namespace) -> int:
+    """Move a pre-packaging `data/` directory to the shared location."""
+    import shutil
+
+    source = config.LEGACY_DATA_DIR
+    target = config.DATA_DIR
+
+    if not (source / "history.db").exists():
+        print(f"Nothing to migrate: no database at {source}")
+        return 0
+    if source.resolve() == target.resolve():
+        print("Already in the shared location.")
+        return 0
+
+    existing = 0
+    if (target / "history.db").exists():
+        conn = store.open_db()
+        existing = store.match_count(conn)
+        conn.close()
+    if existing:
+        print(
+            f"Refusing to overwrite {target}, which already holds {existing} matches.\n"
+            "Move it aside first if you really want the older database."
+        )
+        return 1
+
+    target.mkdir(parents=True, exist_ok=True)
+    for name in ("history.db", "history.db-wal", "history.db-shm", "health.json"):
+        item = source / name
+        if item.exists():
+            shutil.copy2(item, target / name)
+    for folder in ("raw", "static", "samples"):
+        item = source / folder
+        if item.is_dir():
+            shutil.copytree(item, target / folder, dirs_exist_ok=True)
+
+    conn = store.open_db()
+    print(f"Migrated {store.match_count(conn)} matches from {source}\n           to {target}")
+    conn.close()
+    print("The original is left untouched; delete it once you are happy.")
+    return 0
+
+
+def cmd_gui(args: argparse.Namespace) -> int:
+    from .desktop import main as run_desktop
+
+    return run_desktop(with_watcher=not args.no_watcher, port=args.port)
 
 
 def cmd_stats(args: argparse.Namespace) -> int:
@@ -283,6 +342,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_ranks.add_argument("--all", action="store_true", help="refresh every known player")
     p_ranks.set_defaults(func=cmd_ranks)
+
+    sub.add_parser(
+        "migrate-data", help="move an old project-local data/ folder to the shared location"
+    ).set_defaults(func=cmd_migrate_data)
+
+    p_gui = sub.add_parser("gui", help="run the desktop app (window + tracking in one)")
+    p_gui.add_argument(
+        "--no-watcher", action="store_true", help="open the window without tracking"
+    )
+    p_gui.add_argument("--port", type=int, default=None, help="fix the internal port")
+    p_gui.set_defaults(func=cmd_gui)
 
     p_stats = sub.add_parser("stats", help="champion summary in the terminal")
     p_stats.add_argument("--limit", type=int, default=20)

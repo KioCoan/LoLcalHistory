@@ -11,7 +11,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 
 from .. import config, health, ranked
 
@@ -61,6 +61,13 @@ def create_app() -> Flask:
     @app.route("/")
     def index():
         return render_template("index.html")
+
+    @app.route("/favicon.ico")
+    def favicon():
+        icon = config.PACKAGE_DIR / "assets" / "icon.ico"
+        if not icon.exists():
+            return "", 404
+        return send_file(icon, mimetype="image/vnd.microsoft.icon")
 
     @app.route("/api/health")
     def api_health():

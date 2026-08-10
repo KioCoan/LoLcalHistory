@@ -75,10 +75,28 @@ class Rank:
 
 
 def ranked_queue_for(queue_id: int | None, game_mode: str | None) -> str:
-    """Which ladder a match should be read against."""
+    """Which ladder a match should be *displayed* against."""
     if queue_id in CLASSIC_QUEUE_IDS or (game_mode or "").upper() in CLASSIC_GAME_MODES:
         return CLASSIC
     return SOLO
+
+
+# Queues that actually move a ladder. ARAM and Mayhem show your solo rank for
+# context but cannot change it, so they must not be set up to await an LP
+# change — nothing would ever arrive, and the pending game would sit there ready
+# to absorb the next real one.
+RANKED_QUEUE_IDS = {420, 440} | CLASSIC_QUEUE_IDS
+
+
+def affects_ladder(queue_id: int | None, game_mode: str | None) -> str | None:
+    """The ladder this game changes, or None if it changes nothing."""
+    if queue_id in CLASSIC_QUEUE_IDS or (game_mode or "").upper() in CLASSIC_GAME_MODES:
+        return CLASSIC
+    if queue_id == 420:
+        return SOLO
+    if queue_id == 440:
+        return FLEX
+    return None
 
 
 def _clean(value: Any) -> str | None:

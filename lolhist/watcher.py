@@ -70,12 +70,18 @@ class Watcher:
         # The client fires a burst of end-of-game events per match. Without
         # this, each one would start its own retry loop and they would stack up.
         self._capturing = False
+        # Set once a game has been captured, cleared when the client leaves the
+        # post-game screen. Without it the repeated end-of-game events fire
+        # fresh capture attempts for a game already stored, and each one that
+        # finds the stats block gone gets logged as a miss.
+        self._captured_this_cycle = False
         self._last_heartbeat = 0.0
         self._platform_id = ""
         # Your own ladders as last observed, so the next game's LP change can be
         # measured against them.
         self._my_ranks: dict = {}
         self._last_captured: tuple | None = None
+        self._synced = False
 
     async def run_forever(self) -> None:
         delay = RECONNECT_MIN_SECONDS
@@ -118,6 +124,10 @@ class Watcher:
             )
             for line in health.describe():
                 log.info("  %s", line)
+
+            if not self._synced:
+                self._synced = True
+                await asyncio.to_thread(self._initial_sync, client, static)
 
             async with ws_connect(
                 client.credentials.websocket_url,
@@ -162,9 +172,13 @@ class Watcher:
             if phase in END_PHASES:
                 self._game_seen = True
                 await self._capture(client, static)
-            elif phase in IDLE_PHASES and self._game_seen:
-                self._game_seen = False
-                await self._after_game(client, static)
+            else:
+                # Any other phase means the post-game screen is behind us, so
+                # the next end-of-game belongs to a different game.
+                self._captured_this_cycle = False
+                if phase in IDLE_PHASES and self._game_seen:
+                    self._game_seen = False
+                    await self._after_game(client, static)
             return
 
         if uri.startswith(EOG_PREFIX):
@@ -182,7 +196,7 @@ class Watcher:
         The stats block does not appear the instant the phase changes, so this
         retries with a widening gap rather than giving up on the first miss.
         """
-        if self._capturing:
+        if self._capturing or self._captured_this_cycle:
             return
         self._capturing = True
         try:
@@ -250,6 +264,14 @@ class Watcher:
         if not self._my_ranks:
             self._my_ranks = ranked.fetch_mine(client)
             store.save_rank_progress(self.conn, self._my_ranks)
+
+        # A game may have finished after the app was last closed. Its "before"
+        # rank is on record, so the change it caused can still be worked out.
+        try:
+            self._settle_lp(client)
+        except Exception:
+            log.debug("could not settle a pending LP change", exc_info=True)
+
         for rank in self._my_ranks.values():
             if rank.is_ranked:
                 log.info("  %s: %s", rank.queue_type, rank.label())
@@ -275,10 +297,17 @@ class Watcher:
         match.raw_path = store.archive_raw(payload, match.game_id, match.platform_id, "eog")
         outcome = store.upsert_match(self.conn, match)
         self.captured.add(match.game_id)
+        self._captured_this_cycle = True
         health.record_capture(match.game_id, "eog", match.queue_name or match.game_mode)
         self._last_captured = match.key
         if client is not None:
             self._capture_ranks(client, match)
+            # LP is often already updated by the time the stats block exists;
+            # try now, and the delayed pass will catch it if it is not.
+            try:
+                self._settle_lp(client)
+            except Exception:
+                log.debug("LP not settled at capture; will retry", exc_info=True)
         log.info(
             "captured %s (%s, %s players, %s) [%s]",
             match.game_id,
@@ -289,6 +318,31 @@ class Watcher:
         )
         return True
 
+    # Enough to cover a few recent games without a long wait on first launch.
+    INITIAL_RANK_LOOKUPS = 60
+
+    def _initial_sync(self, client: LcuClient, static: StaticData) -> None:
+        """Fill the database once at startup.
+
+        Without this a fresh install shows an empty dashboard until the first
+        game finishes, which reads as broken. The client remembers roughly the
+        last twenty games, so there is something to show immediately.
+        """
+        try:
+            counts = backfill.run(client, self.conn, static, max_games=200)
+            if counts["inserted"]:
+                log.info("imported %s game(s) from the client's history", counts["inserted"])
+
+            pending = store.players_needing_ranks(self.conn, limit=self.INITIAL_RANK_LOOKUPS)
+            if pending:
+                ranks = ranked.fetch_many(client, pending)
+                store.save_player_ranks(self.conn, ranks)
+                log.info("looked up ranks for %s player(s)", len(ranks))
+
+            store.derive_lp_from_snapshots(self.conn)
+        except Exception:
+            log.warning("initial sync did not finish", exc_info=True)
+
     def _capture_ranks(self, client: LcuClient, match) -> None:
         """Pin every player's current rank to this game.
 
@@ -297,6 +351,13 @@ class Watcher:
         during this game" is answerable.
         """
         try:
+            ladder = ranked.affects_ladder(match.queue_id, match.game_mode)
+            before = self._my_ranks.get(ladder) if ladder else None
+            if before is not None and before.is_ranked:
+                # Recorded before anything else can fail, and before waiting on
+                # the new LP to appear.
+                store.record_rank_before(self.conn, match.key, ladder, before)
+
             puuids = [p.puuid for p in match.participants if p.puuid]
             ranks = ranked.fetch_many(client, puuids)
             if not ranks:
@@ -308,6 +369,40 @@ class Watcher:
             # Ranks are a nice-to-have; never let them cost us the match.
             log.warning("could not capture ranks for game %s", match.game_id, exc_info=True)
 
+    def _settle_lp(self, client: LcuClient) -> None:
+        """Complete the LP change for the last ranked game, if one is waiting.
+
+        Driven by what is stored rather than by what happened this session, so
+        it works on a later launch just as well as immediately after the game.
+        Called at capture, again after the game settles, and at startup.
+        """
+        current = ranked.fetch_mine(client)
+        if not current:
+            return
+
+        row = store.pending_lp_match(self.conn)
+        if row is not None:
+            queue_type = row["my_rank_queue"]
+            before = ranked.Rank(
+                queue_type=queue_type,
+                tier=row["my_tier_before"],
+                division=row["my_division_before"],
+                league_points=row["my_lp_before"],
+            )
+            after = current.get(queue_type)
+            delta = ranked.diff_points(before, after)
+            if delta is not None:
+                store.record_lp_change(
+                    self.conn, (row["game_id"], row["platform_id"]), queue_type, delta, after
+                )
+                log.info(
+                    "game %s: %+d LP on %s -> %s",
+                    row["game_id"], delta, queue_type, after.label() or "unranked",
+                )
+
+        store.save_rank_progress(self.conn, current)
+        self._my_ranks = current
+
     async def _after_game(self, client: LcuClient, static: StaticData) -> None:
         """Follow-up work once the client has settled after a game.
 
@@ -316,7 +411,7 @@ class Watcher:
         update, so doing either immediately finds nothing.
         """
         await asyncio.sleep(SWEEP_DELAY_SECONDS)
-        await asyncio.to_thread(self._update_my_rank, client)
+        await asyncio.to_thread(self._settle_lp, client)
 
         if not self.sweep_after_game:
             return
@@ -334,28 +429,6 @@ def _augment_note(match) -> str:
     total = sum(len(p.augments) for p in match.participants)
     return f"{total} augments" if total else "no augments"
 
-
-    def _update_my_rank(self, client: LcuClient) -> None:
-        """Work out what the game just cost or earned you, and record it."""
-        current = ranked.fetch_mine(client)
-        if not current:
-            return
-
-        for queue_type, after in current.items():
-            delta = ranked.diff_points(self._my_ranks.get(queue_type), after)
-            if not delta:
-                continue
-            if self._last_captured is None:
-                log.debug("%s moved %+d but no captured game to attribute it to",
-                          queue_type, delta)
-                continue
-            store.record_lp_change(self.conn, self._last_captured, queue_type, delta, after)
-            log.info(
-                "%s: %+d LP -> %s", queue_type, delta, after.label() or "unranked"
-            )
-
-        store.save_rank_progress(self.conn, current)
-        self._my_ranks = current
 
 def _resolve_platform_id(client: LcuClient) -> str:
     """Find this account's platform (e.g. "BR1").

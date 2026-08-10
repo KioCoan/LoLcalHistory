@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 from . import config
-from .connection import ClientUnavailable, Credentials, discover
+from .connection import ClientUnavailable, Credentials, discover, iter_credentials
 
 log = logging.getLogger(__name__)
 
@@ -90,35 +90,49 @@ class LcuClient:
 
 
 def connect() -> LcuClient:
-    """Discover credentials and confirm the client is actually reachable.
+    """Find the running client and confirm it actually answers.
 
     The probe is the point of this function. A lockfile on disk does not mean
-    the client is running — it is often left behind after the client exits — so
-    credentials are only trusted once a request against them succeeds.
+    the client is running — it is often left behind after the client exits. Each
+    candidate is tried in turn, so a stale lockfile or a second install is
+    something to step over rather than something that stops the tool.
     """
-    credentials = discover()
-    client = LcuClient(credentials)
-    try:
-        response = client.get(PROBE_PATH)
-    except httpx.HTTPError as exc:
-        client.close()
-        raise ClientUnavailable(
-            "Found League Client credentials "
-            f"(port {credentials.port}, from {credentials.origin}) but nothing answered there. "
-            "The lockfile is most likely stale from a previous session — the client is not running."
-        ) from exc
+    problems: list[str] = []
+    tried = 0
 
-    if response.status_code == 401:
-        client.close()
-        raise ClientUnavailable(
-            f"Port {credentials.port} rejected the auth token. The credentials are stale; "
-            "restart the League Client and try again."
-        )
-    if response.status_code >= 400:
-        client.close()
-        raise ClientUnavailable(
-            f"League Client responded {response.status_code} to {PROBE_PATH}. "
-            "Is a game in progress, or is the client still starting up?"
-        )
+    for credentials in iter_credentials():
+        tried += 1
+        client = LcuClient(credentials)
+        try:
+            response = client.get(PROBE_PATH)
+        except httpx.HTTPError:
+            client.close()
+            problems.append(
+                f"port {credentials.port} ({credentials.origin}): nothing answered — "
+                "most likely a lockfile left behind by a closed client"
+            )
+            continue
 
-    return client
+        if response.status_code == 401:
+            client.close()
+            problems.append(f"port {credentials.port}: auth token rejected (stale credentials)")
+            continue
+        if response.status_code >= 400:
+            client.close()
+            problems.append(
+                f"port {credentials.port}: client answered {response.status_code} "
+                "— still starting up, or busy in a game"
+            )
+            continue
+
+        return client
+
+    if not tried:
+        # No credentials at all: let discover() explain where it looked.
+        discover()
+
+    raise ClientUnavailable(
+        "Found League Client credentials but none of them worked:\n  "
+        + "\n  ".join(problems)
+        + "\nIs the client open and logged in?"
+    )

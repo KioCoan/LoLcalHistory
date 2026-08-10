@@ -38,6 +38,9 @@ def _now() -> str:
 _ADDED_COLUMNS = {
     "matches": (
         ("my_rank_queue", "TEXT"),
+        ("my_lp_before", "INTEGER"),
+        ("my_tier_before", "TEXT"),
+        ("my_division_before", "TEXT"),
         ("my_lp_delta", "INTEGER"),
         ("my_lp_after", "INTEGER"),
         ("my_tier_after", "TEXT"),
@@ -328,6 +331,124 @@ def record_lp_change(
         conn.commit()
 
 
+def record_rank_before(
+    conn: sqlite3.Connection, match_key: tuple, queue_type: str, before
+) -> None:
+    """Pin the rank you held going into this game.
+
+    Written immediately at capture. The LP a game awarded may not have landed
+    yet, and waiting for it inside the running session means losing the reading
+    entirely if the app closes first — with the "before" on record, the delta
+    can be completed on any later launch.
+    """
+    with _DB_LOCK:
+        conn.execute(
+            """
+            UPDATE matches SET
+                my_rank_queue      = ?,
+                my_lp_before       = ?,
+                my_tier_before     = ?,
+                my_division_before = ?
+            WHERE game_id = ? AND platform_id = ? AND my_lp_delta IS NULL
+            """,
+            (
+                queue_type, before.league_points, before.tier, before.division,
+                match_key[0], match_key[1],
+            ),
+        )
+        conn.commit()
+
+
+def pending_lp_match(conn: sqlite3.Connection, max_age_hours: int = 6):
+    """The most recent game still waiting for its LP change to be worked out.
+
+    Only ever one, and only a recent one: if several ranked games have gone by
+    unsettled, the current rank cannot say which game moved what, and a guess
+    would be worse than leaving it blank.
+    """
+    with _DB_LOCK:
+        return conn.execute(
+            """
+            SELECT game_id, platform_id, my_rank_queue, my_lp_before,
+                   my_tier_before, my_division_before, game_creation_ms
+            FROM matches
+            WHERE my_lp_before IS NOT NULL
+              AND my_lp_delta IS NULL
+              AND my_rank_queue IS NOT NULL
+              AND game_creation_ms >= (CAST(strftime('%s','now') AS INTEGER) - ?) * 1000
+            ORDER BY game_creation_ms DESC
+            LIMIT 1
+            """,
+            (max_age_hours * 3600,),
+        ).fetchone()
+
+
+def derive_lp_from_snapshots(conn: sqlite3.Connection) -> int:
+    """Recover LP changes from the rank snapshots already on record.
+
+    Every live capture pins your rank as it stood just after that game. Two
+    consecutive games on the same ladder therefore bracket a change, and the
+    difference belongs to the later one — so games captured before LP tracking
+    existed can still get their number, without inventing anything.
+
+    Only games that actually move a ladder are chained: an ARAM game sitting
+    between two Classic games has a solo-queue snapshot, but attributing Classic
+    movement across it would be wrong.
+    """
+    from . import ranked
+
+    filled = 0
+    with _DB_LOCK:
+        for ladder in ranked.TRACKED_QUEUES:
+            rows = conn.execute(
+                """
+                SELECT m.game_id, m.platform_id, m.queue_id, m.game_mode,
+                       m.my_lp_delta, pr.tier, pr.division, pr.league_points
+                FROM v_my_matches v
+                JOIN matches m
+                  ON m.game_id = v.game_id AND m.platform_id = v.platform_id
+                JOIN participant_ranks pr
+                  ON  pr.game_id = v.game_id AND pr.platform_id = v.platform_id
+                  AND pr.participant_id = v.participant_id AND pr.queue_type = ?
+                ORDER BY m.game_creation_ms ASC
+                """,
+                (ladder,),
+            ).fetchall()
+
+            on_ladder = [
+                row for row in rows
+                if ranked.affects_ladder(row["queue_id"], row["game_mode"]) == ladder
+            ]
+
+            for previous, current in zip(on_ladder, on_ladder[1:]):
+                if current["my_lp_delta"] is not None:
+                    continue
+                before = ranked.Rank(
+                    ladder, previous["tier"], previous["division"], previous["league_points"]
+                )
+                after = ranked.Rank(
+                    ladder, current["tier"], current["division"], current["league_points"]
+                )
+                delta = ranked.diff_points(before, after)
+                if delta is None:
+                    continue
+                conn.execute(
+                    """
+                    UPDATE matches SET
+                        my_rank_queue = ?, my_lp_delta = ?, my_lp_after = ?,
+                        my_tier_after = ?, my_division_after = ?
+                    WHERE game_id = ? AND platform_id = ?
+                    """,
+                    (
+                        ladder, delta, after.league_points, after.tier, after.division,
+                        current["game_id"], current["platform_id"],
+                    ),
+                )
+                filled += 1
+        conn.commit()
+    return filled
+
+
 def most_recent_match_key(conn: sqlite3.Connection) -> tuple | None:
     with _DB_LOCK:
         row = conn.execute(
@@ -337,21 +458,30 @@ def most_recent_match_key(conn: sqlite3.Connection) -> tuple | None:
     return (row["game_id"], row["platform_id"]) if row else None
 
 
-def players_needing_ranks(conn: sqlite3.Connection, stale_days: int = 7) -> list[str]:
-    """Players with no rank recorded, or one older than `stale_days`."""
+def players_needing_ranks(
+    conn: sqlite3.Connection, stale_days: int = 7, limit: int | None = None
+) -> list[str]:
+    """Players with no rank recorded, or one older than `stale_days`.
+
+    Ordered by most recently played, so a capped run covers the games you are
+    most likely to be looking at.
+    """
     with _DB_LOCK:
         rows = conn.execute(
             """
-            SELECT DISTINCT p.puuid
+            SELECT p.puuid, MAX(m.game_creation_ms) AS last_seen
             FROM participants p
+            JOIN matches m ON m.game_id = p.game_id AND m.platform_id = p.platform_id
             LEFT JOIN player_ranks r ON r.puuid = p.puuid
             WHERE p.puuid IS NOT NULL
             GROUP BY p.puuid
             HAVING MAX(COALESCE(r.updated_at, '')) < datetime('now', ?)
+            ORDER BY last_seen DESC
             """,
             (f"-{int(stale_days)} days",),
         ).fetchall()
-    return [row["puuid"] for row in rows]
+    puuids = [row["puuid"] for row in rows]
+    return puuids[:limit] if limit else puuids
 
 
 def resolve_names(conn: sqlite3.Connection, static) -> dict[str, int]:
