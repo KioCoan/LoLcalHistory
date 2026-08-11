@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import logging
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -17,6 +18,8 @@ from typing import Any, Iterable
 
 from . import config
 from .models import Match, Participant
+
+log = logging.getLogger(__name__)
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
@@ -110,10 +113,84 @@ def _migrate_rank_progress(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE rank_progress_migrating RENAME TO rank_progress")
 
 
+def _readable(path: Path) -> bool:
+    """Can this file still answer for its own schema?"""
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return False
+    try:
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+        # Reading the schema is not enough: a corrupt page can pass that and
+        # still fail the moment a real table is touched.
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' LIMIT 5"
+        ).fetchall():
+            conn.execute(f'SELECT COUNT(*) FROM "{row[0]}"').fetchone()
+        return True
+    except sqlite3.DatabaseError:
+        return False
+    finally:
+        conn.close()
+
+
+def quarantine_if_damaged(path: Path) -> Path | None:
+    """Move an unreadable database aside instead of building over it.
+
+    The failure this exists for is quiet and expensive. `CREATE TABLE IF NOT
+    EXISTS` against a file whose pages are damaged does not raise — it simply
+    produces the tables it wanted, empty. The app then starts, imports whatever
+    handful of games the client still remembers, and presents that as your
+    history. Nothing anywhere says a word.
+
+    So a file that cannot answer for itself is renamed, never opened for
+    writing. The data may still be recoverable from it, and even when it is not,
+    the raw archive can rebuild the history — but only if the evidence survives.
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return None  # a fresh install, which is not a fault
+    if _readable(path):
+        return None
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    quarantine = path.with_name(f"{path.stem}-damaged-{stamp}{path.suffix}")
+    try:
+        path.rename(quarantine)
+        # The write-ahead log and shared-memory file belong to it, and leaving
+        # them behind would attach them to the replacement.
+        for suffix in ("-wal", "-shm"):
+            companion = path.with_name(path.name + suffix)
+            if companion.exists():
+                companion.rename(quarantine.with_name(quarantine.name + suffix))
+    except OSError:
+        log.exception("could not set aside the damaged database at %s", path)
+        return None
+
+    log.error(
+        "The database at %s could not be read and has been moved to %s. "
+        "A new one has been started. Your matches can be rebuilt from the raw "
+        "archive — nothing has been deleted.",
+        path, quarantine.name,
+    )
+    try:
+        from . import health
+
+        health.record_failure(
+            "DatabaseDamaged",
+            f"history.db was unreadable and was moved to {quarantine.name}; "
+            "the history shown is incomplete until it is rebuilt",
+        )
+    except Exception:
+        log.debug("could not record the database fault in health", exc_info=True)
+    return quarantine
+
+
 def open_db(path: Path | None = None) -> sqlite3.Connection:
     """Open the database, creating it and its schema if needed."""
     config.ensure_dirs()
-    conn = sqlite3.connect(path or config.DB_PATH, check_same_thread=False)
+    target = Path(path or config.DB_PATH)
+    quarantine_if_damaged(target)
+    conn = sqlite3.connect(target, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     with _DB_LOCK:
         conn.execute("PRAGMA foreign_keys = ON")
@@ -122,7 +199,59 @@ def open_db(path: Path | None = None) -> sqlite3.Connection:
         _migrate(conn)
         conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
         conn.commit()
+    snapshot(conn, target)
     return conn
+
+
+def _match_count(path: Path) -> int:
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return 0
+    try:
+        return conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
+    except sqlite3.Error:
+        return 0
+    finally:
+        conn.close()
+
+
+def snapshot(conn: sqlite3.Connection, source: Path) -> Path | None:
+    """Keep one known-good copy of the database beside it.
+
+    Taken through SQLite's own backup API rather than by copying the file, so
+    it is consistent even with a write-ahead log in flight.
+
+    It will not replace a copy that holds more matches than the live database
+    does. That rule is the whole point: the moment something has gone wrong the
+    live file is the *smaller* one, and a blind copy would overwrite the only
+    good record left with the damage.
+    """
+    backup_path = source.with_name(f"{source.stem}-backup{source.suffix}")
+    try:
+        with _DB_LOCK:
+            live = conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
+        if not live:
+            return None
+        if backup_path.exists() and _match_count(backup_path) > live:
+            log.warning(
+                "not overwriting %s: it holds more matches (%d) than the live "
+                "database (%d)", backup_path.name, _match_count(backup_path), live,
+            )
+            return None
+
+        target = backup_path.with_suffix(backup_path.suffix + ".tmp")
+        destination = sqlite3.connect(target)
+        try:
+            with _DB_LOCK:
+                conn.backup(destination)
+        finally:
+            destination.close()
+        target.replace(backup_path)
+        return backup_path
+    except Exception:
+        log.debug("could not snapshot the database", exc_info=True)
+        return None
 
 
 def archive_raw(payload: Any, game_id: int | str, platform_id: str, source: str) -> str:
