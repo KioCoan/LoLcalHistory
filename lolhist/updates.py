@@ -45,6 +45,20 @@ MAX_INSTALLER_BYTES = 300 * 1024 * 1024
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+# The waiter has to outlive the app that starts it, invisibly.
+#
+# Deliberately NOT DETACHED_PROCESS, which is the obvious choice and does not
+# work: with no console at all, PowerShell exits immediately without running
+# anything, and Popen still reports success — a silent no-op. A new process
+# group gives the same independence (no Ctrl+C or Ctrl+Break inherited from
+# us), and Windows does not kill children when their parent exits anyway.
+_INDEPENDENT = _NO_WINDOW | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+# How long the waiter gives us to shut down before installing anyway. Generous:
+# the cost of waiting is a slower update, the cost of giving up early is the
+# crash this whole arrangement exists to prevent.
+QUIT_WAIT_SECONDS = 90
+
 # Set by the desktop app so the updater can close the window before the
 # installer tries to replace the executable underneath it. Absent when running
 # `lolhist serve`, in which case the user is told to close the app themselves.
@@ -316,22 +330,54 @@ def _readable(exc: Exception) -> str:
 
 
 def _launch(installer: Path) -> None:
-    """Start the installer and quit, so it can replace this executable.
+    """Arrange for the installer to run once this app has fully exited.
 
-    `/VERYSILENT` keeps it invisible, and the script's own `[Run]` section
-    brings the app back afterwards. The app must exit for the replacement to
-    succeed, so the quit follows immediately.
+    Not started directly, and the reason matters. A one-file build runs as two
+    processes: a bootloader that unpacks the interpreter into %TEMP%\\_MEIxxxx
+    and owns that directory, and a child that runs the code. Starting Setup
+    first meant its Restart Manager found us still running and — under
+    `CloseApplications=force` — killed the bootloader in the middle of our own
+    orderly shutdown. The unpacked directory went with it while the child was
+    still alive, and the child died on its next import:
+
+        Failed to load Python DLL '...\\_MEI77522\\python313.dll'
+
+    So a detached waiter watches for every one of our processes to disappear
+    and only then starts Setup, which by that point has nothing to close and
+    nothing to force. The force flag stays as a safety net for somebody running
+    the installer by hand with the app open.
     """
-    subprocess.Popen(
-        [
-            str(installer),
+    log_path = config.DATA_DIR / "install.log"
+    arguments = ",".join(
+        f"'{flag}'"
+        for flag in (
             "/VERYSILENT",
             "/SUPPRESSMSGBOXES",
             "/NORESTART",
             "/CLOSEAPPLICATIONS",
-            f'/LOG={config.DATA_DIR / "install.log"}',
-        ],
-        creationflags=_NO_WINDOW,
+            f"/LOG={log_path}",
+        )
+    )
+    # Doubled single quotes are PowerShell's escape inside a single-quoted
+    # string; paths here are under the user's profile and may contain either.
+    installer_literal = str(installer).replace("'", "''")
+    process_name = config.APP_NAME.replace("'", "''")
+
+    script = (
+        # Both processes, not just this one: the bootloader is the one holding
+        # the unpacked directory, and it outlives the child.
+        f"$deadline = (Get-Date).AddSeconds({QUIT_WAIT_SECONDS}); "
+        f"while ((Get-Process -Name '{process_name}' -ErrorAction SilentlyContinue) "
+        f"-and (Get-Date) -lt $deadline) {{ Start-Sleep -Milliseconds 250 }}; "
+        # A breath for the bootloader to finish removing its temp directory.
+        "Start-Sleep -Milliseconds 800; "
+        f"Start-Process -FilePath '{installer_literal}' -ArgumentList {arguments}"
+    )
+
+    subprocess.Popen(
+        ["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+         "-Command", script],
+        creationflags=_INDEPENDENT,
         close_fds=True,
     )
 

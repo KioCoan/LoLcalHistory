@@ -240,6 +240,68 @@ class TestInstallSafety:
     def test_an_unrecognised_failure_is_passed_through_not_hidden(self):
         assert updates._readable(ValueError("checksum mismatch")) == "checksum mismatch"
 
+    def test_the_installer_waits_for_the_app_to_exit(self, monkeypatch):
+        """The crash this was written for.
+
+        Setup used to start straight away, so its Restart Manager found the app
+        mid-shutdown and force-killed the one-file bootloader. That took the
+        unpacked %TEMP%\\_MEIxxxx directory with it while the child process was
+        still alive, which then died on its next import:
+
+            Failed to load Python DLL '...\\_MEI77522\\python313.dll'
+        """
+        spawned = {}
+
+        def capture(argv, **kwargs):
+            spawned["argv"] = argv
+            spawned["kwargs"] = kwargs
+
+        monkeypatch.setattr(updates.subprocess, "Popen", capture)
+        updates._launch(Path(r"C:\some path\Setup.exe"))
+
+        script = spawned["argv"][-1]
+        assert "Get-Process" in script, "Setup was started without waiting"
+        # Waits on the process name, so both the bootloader and the child count.
+        assert config.APP_NAME in script
+        assert "Start-Process" in script
+        # The wait must come first, or it is not a wait.
+        assert script.index("Get-Process") < script.index("Start-Process")
+
+    def test_the_waiter_is_not_spawned_detached(self, monkeypatch):
+        """DETACHED_PROCESS looks right and is a silent no-op.
+
+        With no console at all, PowerShell exits immediately without running
+        the script, while Popen still reports success — so the update simply
+        never happened and nothing anywhere said so.
+        """
+        detached = getattr(updates.subprocess, "DETACHED_PROCESS", 0)
+        if detached:
+            assert not (updates._INDEPENDENT & detached)
+
+        spawned = {}
+        monkeypatch.setattr(
+            updates.subprocess, "Popen",
+            lambda argv, **kw: spawned.update(kw),
+        )
+        updates._launch(Path(r"C:\x\Setup.exe"))
+        assert spawned["creationflags"] == updates._INDEPENDENT
+
+    def test_the_waiter_runs_hidden(self):
+        if hasattr(updates.subprocess, "CREATE_NO_WINDOW"):
+            assert updates._INDEPENDENT & updates.subprocess.CREATE_NO_WINDOW
+
+    def test_a_path_with_a_quote_cannot_break_out_of_the_script(self, monkeypatch):
+        """The installer path is composed into a PowerShell string."""
+        spawned = {}
+        monkeypatch.setattr(
+            updates.subprocess, "Popen",
+            lambda argv, **kw: spawned.update(argv=argv),
+        )
+        updates._launch(Path(r"C:\odd'name\Setup.exe"))
+
+        script = spawned["argv"][-1]
+        assert "odd''name" in script, "a single quote was not escaped"
+
     def test_the_digest_parser_ignores_other_entries(self):
         listing = "aaa  one.exe\nbbb  two.exe\nccc  LoLcal-History-1.0.0-Setup.exe\n"
         assert updates._expected_digest(listing, "LoLcal-History-1.0.0-Setup.exe") == "ccc"

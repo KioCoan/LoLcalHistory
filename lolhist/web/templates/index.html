@@ -93,6 +93,7 @@
   .alert p { margin: 2px 0; font-size: 12.5px; color: var(--text); }
   .alert code { font-size: 12px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
   .ok-note { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  .foot { margin-top: 18px; color: var(--muted); font-size: 12px; }
 
   .update { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
             border: 1px solid var(--accent); border-left-width: 4px; border-radius: var(--radius);
@@ -163,6 +164,7 @@
 
   <div class="tabs" id="tabs"></div>
   <div class="scroll"><div id="view"></div></div>
+  <div class="foot" id="foot"></div>
 </div>
 
 <script>
@@ -470,6 +472,16 @@ let installing = false;
 async function refreshUpdate() {
   const u = await fetch("/api/update").then(r => r.json()).catch(() => null);
   const box = $("#update");
+
+  // Set before any of the early returns below: the version belongs on screen
+  // whether or not there is an update to talk about.
+  if (u) {
+    const state = !u.enabled ? "update check off"
+                : u.available ? `${esc(u.latest)} available`
+                : "up to date";
+    $("#foot").innerHTML = `LoLcal History <b>${esc(u.current)}</b> · ${state}`;
+  }
+
   if (!u || !u.enabled || (!u.available && u.status === "idle")) {
     if (!installing) box.innerHTML = "";
     return;
