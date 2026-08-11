@@ -6,3 +6,10 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 *.egg-info/
+
+# Build output. The release workflow produces these on a runner and attaches
+# them to the release; a 27 MB executable that changes on every build has no
+# business in the history.
+build/
+dist/
+release/

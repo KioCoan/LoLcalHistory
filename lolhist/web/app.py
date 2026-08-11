@@ -1,9 +1,11 @@
 """The local dashboard.
 
-Read-only and offline by construction: it opens the SQLite file, serves one
-page and a handful of JSON endpoints, and makes no outbound requests. The page
-ships its own CSS and JS for the same reason — a CDN link would be a call to
-somebody else's server carrying a referrer.
+Read-only: it opens the SQLite file and serves one page plus a handful of JSON
+endpoints. The page ships its own CSS and JS rather than linking a CDN, and
+every image comes from the icon mirror, so rendering it reaches nobody.
+
+One endpoint does leave the machine — `/api/update` asks GitHub whether a newer
+release exists. It sends nothing about your history; see `lolhist/updates.py`.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from typing import Any
 
 from flask import Flask, jsonify, render_template, request, send_file
 
-from .. import config, health, icons, ranked, static_data, store
+from .. import config, health, icons, ranked, static_data, store, updates
 
 
 def get_conn() -> sqlite3.Connection:
@@ -79,7 +81,13 @@ def _filters(conn: sqlite3.Connection) -> tuple[str, list, str | None]:
     return where, params, account
 
 
-def create_app() -> Flask:
+def create_app(on_show=None) -> Flask:
+    """The dashboard.
+
+    `on_show` raises the desktop window; supplied by the desktop app so a second
+    launch can bring the running one forward. Absent under `lolhist serve`,
+    where there is no window to raise.
+    """
     app = Flask(__name__)
     # Jinja caches compiled templates for the process lifetime otherwise, so an
     # edit to the page would need a server restart to show up.
@@ -95,6 +103,31 @@ def create_app() -> Flask:
         if not icon.exists():
             return "", 404
         return send_file(icon, mimetype="image/vnd.microsoft.icon")
+
+    @app.route("/api/show", methods=["POST"])
+    def api_show():
+        """Bring the desktop window forward. Called by a second launch."""
+        if on_show is None:
+            return jsonify({"shown": False}), 409
+        on_show()
+        return jsonify({"shown": True})
+
+    @app.route("/api/update")
+    def api_update():
+        """Whether a newer release exists.
+
+        `?refresh=1` asks GitHub now; otherwise this answers from the cached
+        result, which is at most a few hours old. See `lolhist/updates.py` for
+        exactly what leaves the machine.
+        """
+        if request.args.get("refresh"):
+            return jsonify(updates.check(force=True))
+        return jsonify(updates.state())
+
+    @app.route("/api/update/install", methods=["POST"])
+    def api_update_install():
+        """Download, verify and run the installer, then quit for it."""
+        return jsonify(updates.start_install())
 
     @app.route("/icon/<kind>/<int:key>")
     def icon(kind: str, key: int):

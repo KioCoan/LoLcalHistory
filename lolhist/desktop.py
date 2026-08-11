@@ -16,7 +16,9 @@ Two decisions shape this file:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import socket
 import threading
 import time
@@ -26,7 +28,8 @@ from typing import Any
 
 from werkzeug.serving import make_server
 
-from . import config, store
+from . import config, store, updates
+from .singleton import SingleInstance
 from .watcher import Watcher
 from .web.app import create_app
 
@@ -35,6 +38,10 @@ log = logging.getLogger(__name__)
 WINDOW_TITLE = config.APP_NAME
 STARTUP_TIMEOUT_SECONDS = 15
 
+# Where a running app records how to reach it, so a second launch can raise its
+# window instead of appearing to do nothing.
+INSTANCE_FILE = "instance.json"
+
 
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -42,13 +49,55 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
+def _announce(url: str) -> None:
+    """Record where this instance is listening."""
+    try:
+        config.ensure_dirs()
+        (config.DATA_DIR / INSTANCE_FILE).write_text(
+            json.dumps({"url": url, "pid": os.getpid()}), encoding="utf-8"
+        )
+    except OSError:
+        log.debug("could not write the instance file", exc_info=True)
+
+
+def _running_instance_url() -> str | None:
+    try:
+        raw = (config.DATA_DIR / INSTANCE_FILE).read_text(encoding="utf-8")
+        return json.loads(raw).get("url")
+    except (OSError, ValueError):
+        return None
+
+
+def raise_running_window() -> bool:
+    """Ask the copy that is already running to show itself.
+
+    Called when a second launch loses the instance mutex. Without this, clicking
+    the icon while the app sits in the tray would do nothing at all, which reads
+    as the app being broken.
+    """
+    url = _running_instance_url()
+    if not url:
+        return False
+    try:
+        request = urllib.request.Request(f"{url}/api/show", method="POST", data=b"")
+        with urllib.request.urlopen(request, timeout=3) as response:
+            return response.status < 400
+    except (urllib.error.URLError, OSError):
+        # Stale file from a copy that is no longer running.
+        return False
+
+
 class DashboardServer:
     """The Flask app on a background thread, with a clean shutdown."""
 
-    def __init__(self, host: str = "127.0.0.1", port: int | None = None) -> None:
+    def __init__(
+        self, host: str = "127.0.0.1", port: int | None = None, on_show=None
+    ) -> None:
         self.host = host
         self.port = port or _free_port()
-        self._server = make_server(self.host, self.port, create_app(), threaded=True)
+        self._server = make_server(
+            self.host, self.port, create_app(on_show=on_show), threaded=True
+        )
         self._thread = threading.Thread(
             target=self._server.serve_forever, name="dashboard", daemon=True
         )
@@ -59,6 +108,7 @@ class DashboardServer:
 
     def start(self) -> None:
         self._thread.start()
+        _announce(self.url)
         log.info("dashboard listening on %s", self.url)
 
     def wait_until_ready(self, timeout: float = STARTUP_TIMEOUT_SECONDS) -> bool:
@@ -74,6 +124,10 @@ class DashboardServer:
 
     def stop(self) -> None:
         self._server.shutdown()
+        try:
+            (config.DATA_DIR / INSTANCE_FILE).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 class WatcherThread(threading.Thread):
@@ -172,7 +226,7 @@ class TrayIcon:
 
 class Application:
     def __init__(self, with_watcher: bool = True, port: int | None = None) -> None:
-        self.server = DashboardServer(port=port)
+        self.server = DashboardServer(port=port, on_show=self._open)
         self.watcher = WatcherThread() if with_watcher else None
         self.tray: TrayIcon | None = None
         self.window: Any = None
@@ -250,6 +304,12 @@ class Application:
         if not self.tray.start():
             self.tray = None
 
+        # The installer cannot replace an executable that is running, so the
+        # updater needs a way to close this window. Registered only here: under
+        # `lolhist serve` there is no window and the user closes the app.
+        updates.set_quit_hook(self._quit)
+        updates.check_in_background()
+
         try:
             webview.start()
         except Exception:
@@ -287,7 +347,21 @@ def _setup_file_logging() -> None:
 def main(with_watcher: bool = True, port: int | None = None) -> int:
     if config.FROZEN:
         _setup_file_logging()
-    return Application(with_watcher=with_watcher, port=port).run()
+
+    instance = SingleInstance()
+    if not instance.acquire():
+        # Someone launched it twice, or an installer relaunched it before the
+        # old copy had finished exiting. Show that copy rather than starting a
+        # second watcher against the same database.
+        log.info("already running; raising the existing window")
+        if not raise_running_window():
+            log.warning("an instance holds the lock but did not answer")
+        return 0
+
+    try:
+        return Application(with_watcher=with_watcher, port=port).run()
+    finally:
+        instance.release()
 
 
 if __name__ == "__main__":

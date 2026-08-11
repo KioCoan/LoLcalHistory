@@ -19,14 +19,48 @@ For the modes this was built for, the public API is closed, not merely inconveni
 
 ## Privacy
 
-This tool is single-player and local by construction. It makes **no outbound network
-calls at all** — champion, queue and augment names are read from the client's own game
-data, not from Data Dragon or CommunityDragon. Nothing is uploaded, synced, published or
-aggregated anywhere. `data/` is gitignored.
+**Nothing about your games ever leaves this machine.** No upload, no sync, no telemetry,
+no export. Champion, queue, item and augment names — and every icon on the dashboard —
+come from the game client's own files, not from Data Dragon, CommunityDragon or any CDN.
+`data/` is gitignored.
 
 That matters beyond preference: Riot asked that League Classic data not be aggregated or
 displayed publicly. A private record of your own games, that never leaves your machine,
 is a different thing — and it stays that way only if the tool never grows an export.
+
+**The one request that goes out** is the update check: a `GET` to this repository's
+public releases API to compare version numbers. It carries no query, no body and no
+identifier, so all GitHub can observe is that some machine asked what the latest version
+is. Turn it off completely with `LOLHIST_NO_UPDATE_CHECK=1`.
+
+## Installing
+
+Grab the latest **Setup.exe** from the [releases page](https://github.com/KioCoan/LoLcalHistory/releases)
+and run it. It installs for the current user only — no administrator prompt — and adds a
+Start Menu entry. Windows SmartScreen will warn that the publisher is unknown, because
+the installer is not code-signed; choose **More info → Run anyway**.
+
+After that the app updates itself: when a newer release exists, a banner appears with an
+**Update now** button that downloads the installer, checks it against the published
+SHA-256, runs it silently and reopens the app. Your history is never touched by an
+upgrade or an uninstall.
+
+### Cutting a release
+
+The version in `lolhist/version.py` is the source of truth, and the workflow fails the
+build if a tag disagrees with it.
+
+```bash
+# bump __version__ in lolhist/version.py and version in pyproject.toml, then:
+git commit -am "Release 0.2.0"
+git tag v0.2.0
+git push origin main --tags
+```
+
+`.github/workflows/release.yml` runs the tests, builds the executable, compiles the Inno
+Setup installer and publishes a release with the installer, a portable exe and
+`SHA256SUMS.txt`. Use the workflow's **Run workflow** button to rehearse a build without
+publishing anything.
 
 ## The app
 

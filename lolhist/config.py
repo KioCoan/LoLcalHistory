@@ -21,6 +21,10 @@ PROJECT_DIR = PACKAGE_DIR.parent
 
 APP_NAME = "LoLcal History"
 
+# Re-exported so the rest of the code needs one import for both. `version` is a
+# leaf module and imports nothing from the package, so this cannot cycle.
+from .version import __version__ as APP_VERSION  # noqa: E402
+
 _APPDATA_ROOT = Path(os.environ.get("LOCALAPPDATA") or Path.home())
 # What the folder was called before the app was named.
 _LEGACY_APPDATA_DIR = _APPDATA_ROOT / "lol-local-history"
@@ -81,8 +85,8 @@ FALLBACK_INSTALL_DIRS = (
 # Set LOLHIST_LOCKFILE to bypass discovery entirely.
 LOCKFILE_OVERRIDE = os.environ.get("LOLHIST_LOCKFILE")
 
-# Riot's published root cert, if the user drops it here. Absent by default —
-# fetching it would mean an outbound call, which this tool does not make.
+# Riot's published root cert, if the user drops it here. Absent by default:
+# fetching it would mean reaching out to Riot, which nothing here does.
 RIOT_CA_BUNDLE = PACKAGE_DIR / "riotgames.pem"
 
 WEB_HOST = os.environ.get("LOLHIST_HOST", "127.0.0.1")

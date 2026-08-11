@@ -93,6 +93,21 @@
   .alert p { margin: 2px 0; font-size: 12.5px; color: var(--text); }
   .alert code { font-size: 12px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
   .ok-note { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+
+  .update { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+            border: 1px solid var(--accent); border-left-width: 4px; border-radius: var(--radius);
+            background: color-mix(in srgb, var(--accent) 12%, transparent);
+            padding: 11px 14px; margin-bottom: 16px; font-size: 13px; }
+  .update b { font-weight: 600; }
+  .update .grow { flex: 1 1 auto; }
+  .update a { color: var(--accent); }
+  .update button { background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+                   padding: 7px 14px; font: inherit; font-weight: 600; cursor: pointer; }
+  .update button:hover { filter: brightness(1.08); }
+  .update button:disabled { opacity: .6; cursor: default; }
+  .update .bar { height: 4px; border-radius: 2px; background: var(--panel-2);
+                 width: 100%; overflow: hidden; }
+  .update .bar > i { display: block; height: 100%; background: var(--accent); transition: width .2s; }
   .muted { color: var(--muted); font-size: 12px; }
   .tag { color: var(--muted); font-size: 11px; }
   .lp { color: var(--muted); font-size: 11px; margin-left: 4px; }
@@ -124,6 +139,7 @@
     <h1 id="who">LoLcal History</h1>
   </div>
 
+  <div id="update"></div>
   <div id="alert"></div>
   <div class="cards" id="cards"></div>
   <div class="ok-note" id="watcher"></div>
@@ -447,6 +463,67 @@ function ago(iso) {
   return hrs < 24 ? `${hrs}h ago` : `${Math.floor(hrs / 24)}d ago`;
 }
 
+// Shown only when a newer release exists. Nothing about your history is sent to
+// check — see lolhist/updates.py — and LOLHIST_NO_UPDATE_CHECK=1 turns it off.
+let installing = false;
+
+async function refreshUpdate() {
+  const u = await fetch("/api/update").then(r => r.json()).catch(() => null);
+  const box = $("#update");
+  if (!u || !u.enabled || (!u.available && u.status === "idle")) {
+    if (!installing) box.innerHTML = "";
+    return;
+  }
+
+  const link = `<a href="${esc(u.release?.url || u.releases_url)}" target="_blank" rel="noreferrer">release notes</a>`;
+
+  if (u.status === "downloading" || u.status === "verifying" || u.status === "installing") {
+    installing = true;
+    const label = { downloading: "Downloading", verifying: "Checking the download",
+                    installing: "Installing — the app will reopen by itself" }[u.status];
+    box.innerHTML = `<div class="update">
+      <div class="grow"><b>${label}…</b> version ${esc(u.latest)}
+        <div class="bar"><i style="width:${u.status === "downloading" ? u.progress : 100}%"></i></div>
+      </div></div>`;
+    return;
+  }
+
+  if (u.status === "failed") {
+    installing = false;
+    box.innerHTML = `<div class="update">
+      <div class="grow"><b>The update could not be installed.</b>
+        <div class="muted">${esc(u.error || "Unknown error")} — you can download ${esc(u.latest)} from the ${link} instead.</div>
+      </div>
+      <button id="retry" type="button">Try again</button></div>`;
+    $("#retry").onclick = startInstall;
+    return;
+  }
+
+  // A source checkout has no installer to run, so offer the notes only.
+  const action = u.frozen
+    ? `<button id="install" type="button">Update now</button>`
+    : `<span class="muted">Update with git.</span>`;
+  box.innerHTML = `<div class="update">
+    <div class="grow"><b>Version ${esc(u.latest)} is available.</b>
+      <span class="muted">You have ${esc(u.current)} — ${link}.</span></div>
+    ${action}</div>`;
+  const button = $("#install");
+  if (button) button.onclick = startInstall;
+}
+
+async function startInstall() {
+  installing = true;
+  const button = $("#install") || $("#retry");
+  if (button) { button.disabled = true; button.textContent = "Starting…"; }
+  await fetch("/api/update/install", { method: "POST" }).catch(() => {});
+  await refreshUpdate();
+  // Follow the download closely while it runs, rather than at the page's pace.
+  const poll = setInterval(async () => {
+    await refreshUpdate();
+    if (!installing) clearInterval(poll);
+  }, 1000);
+}
+
 // A watcher that fails silently is worse than one that crashes, so its state
 // gets its own banner rather than living only in the log.
 async function refreshHealth() {
@@ -537,7 +614,7 @@ async function refreshAll({ silent = true } = {}) {
   button.disabled = true;
   try {
     await refreshAccounts();   // before the rest: it decides what they are scoped to
-    await Promise.all([refreshFilters(), refreshSummary(), refreshHealth()]);
+    await Promise.all([refreshFilters(), refreshSummary(), refreshHealth(), refreshUpdate()]);
     await render({ silent });
     lastRefresh = Date.now();
     paintUpdated();
@@ -581,6 +658,7 @@ async function boot() {
 
   await refreshSummary();
   await refreshHealth();
+  await refreshUpdate();
   await render();
   lastRefresh = Date.now();
   paintUpdated();

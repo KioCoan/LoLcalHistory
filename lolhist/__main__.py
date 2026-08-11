@@ -333,6 +333,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Local League of Legends match history, read from the game client.",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
+    parser.add_argument(
+        "--version", action="version", version=f"{config.APP_NAME} {config.APP_VERSION}"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("doctor", help="check the client connection and the database").set_defaults(

@@ -3,8 +3,9 @@
 The dashboard shows champion portraits, item builds and your profile picture.
 None of it is fetched from the web: the client already ships every image for its
 own UI, so they are copied out of it once and served from disk afterwards. That
-keeps the hard rule intact — no outbound network calls — and means the page
-still renders with League closed, which is most of the time you would read it.
+keeps the art offline — nothing here contacts Riot, Data Dragon or a CDN — and
+means the page still renders with League closed, which is most of the time you
+would read it.
 
 Only what your history actually references is copied. A fresh install mirrors a
 couple of hundred small PNGs on its first sync and almost nothing after that.
