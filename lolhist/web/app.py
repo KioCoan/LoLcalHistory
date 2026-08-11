@@ -13,7 +13,7 @@ from typing import Any
 
 from flask import Flask, jsonify, render_template, request, send_file
 
-from .. import config, health, ranked, store
+from .. import config, health, icons, ranked, static_data, store
 
 
 def get_conn() -> sqlite3.Connection:
@@ -96,6 +96,22 @@ def create_app() -> Flask:
             return "", 404
         return send_file(icon, mimetype="image/vnd.microsoft.icon")
 
+    @app.route("/icon/<kind>/<int:key>")
+    def icon(kind: str, key: int):
+        """An icon from the local mirror.
+
+        A 404 here is ordinary, not an error: it means the watcher has not
+        copied that one out of the client yet. The page listens for it and keeps
+        showing the name instead.
+        """
+        path = icons.path_for(kind, key)
+        if path is None or not path.exists():
+            return "", 404
+        response = send_file(path, mimetype="image/jpeg" if kind == "profile" else "image/png")
+        # The file is named after an immutable id, so re-fetching it is waste.
+        response.headers["Cache-Control"] = "public, max-age=604800"
+        return response
+
     @app.route("/api/health")
     def api_health():
         """Watcher status, so a silently broken capture surfaces on the page."""
@@ -110,6 +126,20 @@ def create_app() -> Flask:
                 "last_capture_at": state.get("last_capture_at"),
                 "last_seen_at": state.get("watcher_last_seen_at"),
                 "last_error": state.get("last_error"),
+            }
+        )
+
+    @app.route("/api/assets")
+    def api_assets():
+        """Item and spell names, for the tooltips on the build icons.
+
+        Read from the cached asset files, so this works with League closed.
+        Fetched once per page load — these only change on a patch.
+        """
+        return jsonify(
+            {
+                "items": {str(k): v for k, v in static_data.asset_map("items", "name").items()},
+                "spells": {str(k): v for k, v in static_data.asset_map("spells", "name").items()},
             }
         )
 
@@ -173,7 +203,7 @@ def create_app() -> Flask:
             # old `LIMIT 1` picked one arbitrarily, so a second account made the
             # header label somebody else's games.
             account = conn.execute(
-                "SELECT riot_id_game_name, riot_id_tagline FROM me"
+                "SELECT riot_id_game_name, riot_id_tagline, profile_icon_id FROM me"
                 " WHERE puuid = ? LIMIT 1",
                 (selected or "",),
             ).fetchone()
@@ -198,7 +228,8 @@ def create_app() -> Flask:
                        v.assists, v.cs, v.gold_earned, v.damage_to_champions,
                        v.vision_score, v.source, v.team_id, v.participant_id,
                        v.my_rank_queue, v.my_lp_delta, v.my_lp_after, v.my_tier_after,
-                       v.my_division_after
+                       v.my_division_after, v.spell1_id, v.spell2_id,
+                       v.item0, v.item1, v.item2, v.item3, v.item4, v.item5, v.item6
                 FROM v_my_matches v{where}
                 ORDER BY v.game_creation_ms DESC LIMIT ?
                 """,
@@ -245,9 +276,11 @@ def create_app() -> Flask:
         return _rows(
             conn,
             """
-            SELECT p.participant_id, p.puuid, p.champion_name, p.riot_id_game_name,
-                   p.riot_id_tagline, p.summoner_name, p.kills, p.deaths, p.assists,
-                   p.team_id, p.win,
+            SELECT p.participant_id, p.puuid, p.champion_id, p.champion_name,
+                   p.riot_id_game_name, p.riot_id_tagline, p.summoner_name,
+                   p.kills, p.deaths, p.assists, p.team_id, p.win,
+                   p.spell1_id, p.spell2_id,
+                   p.item0, p.item1, p.item2, p.item3, p.item4, p.item5, p.item6,
                    COALESCE(pr.tier, plr.tier)                   AS tier,
                    COALESCE(pr.division, plr.division)           AS division,
                    COALESCE(pr.league_points, plr.league_points) AS league_points,

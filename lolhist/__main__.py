@@ -7,7 +7,7 @@ import logging
 import sys
 
 from . import backfill as backfill_mod
-from . import config, health, probe, ranked, static_data, store
+from . import config, health, icons, probe, ranked, static_data, store
 from .client import connect
 from .connection import ClientUnavailable, installed_league_dirs, read_lockfile
 
@@ -112,11 +112,15 @@ def cmd_backfill(args: argparse.Namespace) -> int:
                 summoner["puuid"],
                 summoner.get("gameName") or summoner.get("displayName"),
                 summoner.get("tagLine"),
+                summoner.get("profileIconId"),
             )
         static = static_data.load(client)
         counts = backfill_mod.run(
             client, conn, static, max_games=args.max, refetch=args.refetch
         )
+        # The client is open right now, which is the only time icons for the
+        # games just imported can be copied out of it.
+        mirrored = icons.sync(client, conn)
 
     print(
         f"Seen {counts['seen']}  inserted {counts['inserted']}  "
@@ -124,6 +128,8 @@ def cmd_backfill(args: argparse.Namespace) -> int:
         f"already stored {counts['skipped']}  failed {counts['failed']}"
     )
     print(f"Total matches stored: {store.match_count(conn)}")
+    if mirrored["fetched"]:
+        print(f"Mirrored {mirrored['fetched']} icon(s) from the client.")
     conn.close()
     return 0
 

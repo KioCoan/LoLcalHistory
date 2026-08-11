@@ -24,8 +24,31 @@
     font: 14px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif;
   }
   .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 20px 64px; }
-  h1 { font-size: 20px; margin: 0 0 2px; font-weight: 600; }
-  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  h1 { font-size: 20px; margin: 0; font-weight: 600; }
+
+  /* Every icon is served from a local mirror of the client's own art. When one
+     has not been copied yet the <img> is removed and the text stands alone, so
+     the layout never depends on the picture arriving. */
+  .hdr { display: flex; align-items: center; gap: 11px; margin-bottom: 20px; }
+  .pfp { width: 42px; height: 42px; border-radius: 50%; flex: none;
+         border: 1px solid var(--line); background: var(--panel-2); }
+  .champ { width: 24px; height: 24px; border-radius: 5px; flex: none;
+           background: var(--panel-2); }
+  .champcell { display: flex; align-items: center; gap: 8px; }
+  .build { display: inline-flex; gap: 2px; align-items: center; }
+  /* The box is the slot, the image only fills it. An icon that has not been
+     mirrored yet removes itself and leaves the empty box, so a five-item build
+     never reads as a four-item one. */
+  .build .slot { display: inline-block; width: 21px; height: 21px; flex: none;
+                 border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line); }
+  .build .slot img { width: 100%; height: 100%; display: block; border-radius: 3px; }
+  /* The trinket is not part of the build proper; a gap says so. */
+  .build .trinket { margin-left: 5px; }
+  .spells { display: inline-flex; flex-direction: column; gap: 2px; margin-right: 5px; }
+  .spells img { width: 15px; height: 15px; border-radius: 3px; }
+  .teams li { display: flex; align-items: center; gap: 7px; }
+  .teams .champ { width: 22px; height: 22px; }
+  .who { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 20px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
@@ -58,7 +81,7 @@
   .detail td { white-space: normal; background: var(--panel-2); }
   .teams { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   .teams ul { list-style: none; margin: 0; padding: 0; }
-  .teams li { padding: 2px 0; color: var(--muted); font-size: 12px; }
+  .teams li { padding: 3px 0; color: var(--muted); font-size: 12px; }
   .teams li b { color: var(--text); font-weight: 500; }
   .augs { margin-top: 8px; }
   .augs .pill { margin: 0 4px 4px 0; color: var(--text); }
@@ -92,13 +115,14 @@
     button#refresh.busy .spin { animation: none; border-top-color: var(--text); }
   }
   .updated { color: var(--muted); font-size: 12px; }
-  .foot { margin-top: 20px; color: var(--muted); font-size: 12px; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1 id="who">LoLcal History</h1>
-  <div class="sub" id="scope">Local only — nothing here leaves this machine.</div>
+  <div class="hdr">
+    <img id="pfp" class="pfp" alt="" hidden>
+    <h1 id="who">LoLcal History</h1>
+  </div>
 
   <div id="alert"></div>
   <div class="cards" id="cards"></div>
@@ -123,7 +147,6 @@
 
   <div class="tabs" id="tabs"></div>
   <div class="scroll"><div id="view"></div></div>
-  <div class="foot" id="foot"></div>
 </div>
 
 <script>
@@ -180,6 +203,40 @@ function rankCell(p) {
   return `${esc(text)}${approx}<span class="lp">${lp}</span>`;
 }
 
+// Item and spell names, for the build tooltips. Loaded once — they only move on
+// a patch — and empty until then, which just means no tooltip.
+let assetNames = { items: {}, spells: {} };
+
+// An icon that removes itself if the mirror has not copied it yet, leaving
+// whatever text sits beside it as the only thing the row depends on.
+function icon(kind, id, cls, title) {
+  if (!id) return "";
+  const t = title ? ` title="${esc(title)}"` : "";
+  return `<img class="${cls}" src="/icon/${kind}/${Number(id)}" alt=""` +
+         `${t} loading="lazy" onerror="this.remove()">`;
+}
+
+function championCell(r) {
+  const name = esc(r.champion_name || (r.champion_id ? "Champion " + r.champion_id : "?"));
+  return `<div class="champcell">${icon("champion", r.champion_id, "champ", r.champion_name)}` +
+         `<span>${name}</span></div>`;
+}
+
+// Six item slots then the trinket. Empty slots are drawn rather than skipped so
+// a four-item game does not look like a six-item one.
+function buildCell(r) {
+  const slot = (id, cls = "slot") =>
+    `<span class="${cls}">${id ? icon("item", id, "", assetNames.items[id]) : ""}</span>`;
+  const items = [0, 1, 2, 3, 4, 5].map(n => slot(r["item" + n])).join("");
+  const trinket = r.item6 ? slot(r.item6, "slot trinket") : "";
+  const spells = (r.spell1_id || r.spell2_id)
+    ? `<span class="spells">${icon("spell", r.spell1_id, "", assetNames.spells[r.spell1_id])}` +
+      `${icon("spell", r.spell2_id, "", assetNames.spells[r.spell2_id])}</span>`
+    : "";
+  if (!items && !trinket) return '<span class="muted">—</span>';
+  return `<div class="build">${spells}${items}${trinket}</div>`;
+}
+
 function lpCell(r) {
   if (r.my_lp_delta === null || r.my_lp_delta === undefined) return "—";
   const v = Number(r.my_lp_delta);
@@ -225,7 +282,7 @@ const COLS = {
   matches: [
     { key: "game_creation_ms", label: "When", render: r => when(r.game_creation_ms) },
     { key: "queue_name", label: "Mode", render: r => `<span class="pill">${esc(r.queue_name || r.game_mode || "?")}</span>` },
-    { key: "champion_name", label: "Champion" },
+    { key: "champion_name", label: "Champion", render: championCell },
     { key: "win", label: "Result", render: r =>
         r.placement ? `<span class="pill">#${r.placement}</span>`
                     : (r.win ? '<span class="w">Win</span>' : '<span class="l">Loss</span>') },
@@ -234,11 +291,12 @@ const COLS = {
     { key: "kills", label: "K / D / A", num: true, render: r => `${r.kills}/${r.deaths}/${r.assists}` },
     { key: "cs", label: "CS", num: true },
     { key: "damage_to_champions", label: "Damage", num: true, render: r => (r.damage_to_champions ?? 0).toLocaleString() },
+    { key: "item0", label: "Build", render: buildCell },
     { key: "game_duration_s", label: "Length", num: true, render: r => duration(r.game_duration_s) },
     { key: "source", label: "Src", render: r => `<span class="pill">${esc(r.source)}</span>` },
   ],
   champions: [
-    { key: "champion_name", label: "Champion" },
+    { key: "champion_name", label: "Champion", render: championCell },
     { key: "games", label: "Games", num: true },
     { key: "wins", label: "W", num: true },
     { key: "losses", label: "L", num: true },
@@ -281,8 +339,10 @@ function playerLine(p) {
     ? `<span class="pill"${p.rank_at_match ? "" : ' title="Current rank — this game predates rank capture"'}>` +
       `${esc(rank)}${p.rank_at_match ? "" : "*"}${p.league_points != null ? " · " + p.league_points + " LP" : ""}</span>`
     : "";
-  return `<li><b>${esc(p.champion_name || "?")}</b> — ${name}${tag}
-    · ${p.kills}/${p.deaths}/${p.assists} ${badge}</li>`;
+  return `<li>${icon("champion", p.champion_id, "champ", p.champion_name)}
+    <span class="who"><b>${esc(p.champion_name || "?")}</b> — ${name}${tag}
+    · ${p.kills}/${p.deaths}/${p.assists} ${badge}</span>
+    ${buildCell(p)}</li>`;
 }
 
 function matchDetail(r, key) {
@@ -290,7 +350,7 @@ function matchDetail(r, key) {
   const augs = (r.augments || []).filter(Boolean);
   const ladder = r.rank_queue_type === "JADE_RANKED_SOLO_5x5" ? "Classic ladder" : "Solo/Duo";
   const anyApprox = (r.team || []).some(p => p.tier && !p.rank_at_match);
-  return `<tr class="detail" data-detail="${esc(key)}" hidden><td colspan="11">
+  return `<tr class="detail" data-detail="${esc(key)}" hidden><td colspan="12">
     ${augs.length ? `<div class="augs"><b>Augments:</b> ${augs.map(a => `<span class="pill">${esc(a)}</span>`).join(" ")}</div>` : ""}
     <div class="muted" style="margin-top:8px">Ranks shown for: <b>${ladder}</b></div>
     <div class="teams" style="margin-top:6px">
@@ -360,6 +420,13 @@ async function refreshSummary() {
   const { summary, account } = await api("summary");
   if (account) {
     $("#who").textContent = `${account.riot_id_game_name || "LoLcal History"}${account.riot_id_tagline ? "#" + account.riot_id_tagline : ""}`;
+    const pfp = $("#pfp");
+    // Hidden rather than broken when the icon has not been mirrored yet.
+    pfp.hidden = !account.profile_icon_id;
+    if (account.profile_icon_id) {
+      pfp.onerror = () => { pfp.hidden = true; };
+      pfp.src = `/icon/profile/${Number(account.profile_icon_id)}`;
+    }
   }
   const games = summary.games || 0, wins = summary.wins || 0;
   const wr = games ? (100 * wins / games).toFixed(1) : "0.0";
@@ -487,6 +554,10 @@ async function refreshAll({ silent = true } = {}) {
 }
 
 async function boot() {
+  // Tooltip text for the build icons. Failing is survivable — the icons still
+  // render, they just stop naming themselves on hover.
+  assetNames = await fetch("/api/assets").then(r => r.json()).catch(() => assetNames);
+
   await refreshAccounts();
   await refreshFilters();
 
@@ -521,9 +592,6 @@ async function boot() {
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) refreshAll();
   });
-
-  $("#foot").textContent =
-    `Read-only view of your local history. Auto-refreshes every ${REFRESH_MS / 1000}s. No outbound network calls.`;
 }
 boot();
 </script>

@@ -24,6 +24,13 @@ log = logging.getLogger(__name__)
 CHAMPION_ASSET = "/lol-game-data/assets/v1/champion-summary.json"
 QUEUES_ENDPOINT = "/lol-game-queues/v1/queues"
 
+# Cached for their `iconPath` fields as much as their names — every item icon on
+# the page is fetched by following one of these. League Classic ships its own
+# item ids (Berserker's Greaves is 773006 there, 3006 on Summoner's Rift) and
+# they are all in the same file, so nothing special is needed for them.
+ITEMS_ASSET = "/lol-game-data/assets/v1/items.json"
+SPELLS_ASSET = "/lol-game-data/assets/v1/summoner-spells.json"
+
 # Arena-style augments live in cherry-augments.json. Mayhem reuses the augment
 # system, and may or may not ship its own file — every candidate that 404s is
 # skipped, so listing a plausible one costs nothing and catches it if it exists.
@@ -125,6 +132,16 @@ def _index_names(payload: Any, name_keys: tuple[str, ...]) -> dict[int, str]:
     return index
 
 
+def asset_map(name: str, field: str) -> dict[int, str]:
+    """`{id: field}` from a cached asset file, empty if it was never fetched.
+
+    Used for item and spell icon paths, which are what the icon mirror follows,
+    and for their names. Reads the cache only — never the client — so the
+    dashboard can use it with League closed.
+    """
+    return _index_names(_read_cache(name), (field,))
+
+
 def refresh(client: LcuClient) -> None:
     """Pull fresh asset data from the client and cache it."""
     champions = client.get_json_or_none(CHAMPION_ASSET)
@@ -134,6 +151,11 @@ def refresh(client: LcuClient) -> None:
     queues = client.get_json_or_none(QUEUES_ENDPOINT)
     if queues is not None:
         _write_cache("queues", queues)
+
+    for name, asset in (("items", ITEMS_ASSET), ("spells", SPELLS_ASSET)):
+        payload = client.get_json_or_none(asset)
+        if payload is not None:
+            _write_cache(name, payload)
 
     merged: list[dict] = []
     for asset in AUGMENT_ASSETS:
@@ -149,7 +171,10 @@ def refresh(client: LcuClient) -> None:
 def load(client: LcuClient | None = None) -> StaticData:
     """Load names, refreshing from the client when it is available and stale."""
     if client is not None:
-        stale = not all(_cache_is_fresh(name) for name in ("champions", "queues", "augments"))
+        stale = not all(
+            _cache_is_fresh(name)
+            for name in ("champions", "queues", "augments", "items", "spells")
+        )
         if stale:
             try:
                 refresh(client)

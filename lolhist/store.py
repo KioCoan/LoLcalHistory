@@ -46,6 +46,9 @@ _ADDED_COLUMNS = {
         ("my_tier_after", "TEXT"),
         ("my_division_after", "TEXT"),
     ),
+    "me": (
+        ("profile_icon_id", "INTEGER"),
+    ),
 }
 
 
@@ -137,18 +140,29 @@ def read_raw(relative_path: str) -> Any:
         return json.load(handle)
 
 
-def set_me(conn: sqlite3.Connection, puuid: str, game_name: str | None, tagline: str | None) -> None:
+def set_me(
+    conn: sqlite3.Connection,
+    puuid: str,
+    game_name: str | None,
+    tagline: str | None,
+    profile_icon_id: int | None = None,
+) -> None:
     with _DB_LOCK:
         conn.execute(
             """
-            INSERT INTO me (puuid, riot_id_game_name, riot_id_tagline, updated_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO me (puuid, riot_id_game_name, riot_id_tagline,
+                            profile_icon_id, updated_at)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(puuid) DO UPDATE SET
                 riot_id_game_name = excluded.riot_id_game_name,
                 riot_id_tagline   = excluded.riot_id_tagline,
+                -- Keeps the last known picture when a caller does not supply
+                -- one, so the header does not lose its avatar.
+                profile_icon_id   = COALESCE(excluded.profile_icon_id,
+                                             me.profile_icon_id),
                 updated_at        = excluded.updated_at
             """,
-            (puuid, game_name, tagline, _now()),
+            (puuid, game_name, tagline, profile_icon_id, _now()),
         )
         conn.commit()
 
@@ -177,7 +191,8 @@ def accounts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     with _DB_LOCK:
         rows = conn.execute(
             """
-            SELECT me.puuid, me.riot_id_game_name, me.riot_id_tagline, me.updated_at,
+            SELECT me.puuid, me.riot_id_game_name, me.riot_id_tagline,
+                   me.profile_icon_id, me.updated_at,
                    (SELECT COUNT(*) FROM v_my_matches v WHERE v.puuid = me.puuid) AS games
             FROM me
             ORDER BY me.updated_at DESC

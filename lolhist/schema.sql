@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS me (
     puuid             TEXT PRIMARY KEY,
     riot_id_game_name TEXT,
     riot_id_tagline   TEXT,
+    profile_icon_id   INTEGER,
     updated_at        TEXT
 );
 
@@ -159,7 +160,8 @@ SELECT
     p.participant_id, p.puuid, p.team_id, p.champion_id, p.champion_name,
     p.position, p.win, p.placement, p.kills, p.deaths, p.assists, p.cs,
     p.gold_earned, p.damage_to_champions, p.damage_taken, p.vision_score,
-    p.champ_level, p.spell1_id, p.spell2_id
+    p.champ_level, p.spell1_id, p.spell2_id,
+    p.item0, p.item1, p.item2, p.item3, p.item4, p.item5, p.item6
 FROM matches m
 JOIN participants p
   ON p.game_id = m.game_id AND p.platform_id = m.platform_id

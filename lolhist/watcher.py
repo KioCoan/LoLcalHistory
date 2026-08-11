@@ -28,7 +28,7 @@ from typing import Any
 import websockets
 from websockets.asyncio.client import connect as ws_connect
 
-from . import backfill, health, ranked, static_data, store
+from . import backfill, health, icons, ranked, static_data, store
 from .client import LcuClient, build_ssl_context, connect
 from .connection import ClientUnavailable
 from .normalize import apply_queue_hint, normalize
@@ -162,6 +162,7 @@ class Watcher:
                 puuid,
                 summoner.get("gameName") or summoner.get("displayName"),
                 summoner.get("tagLine"),
+                summoner.get("profileIconId"),
             )
 
     async def _on_frame(self, raw: Any, client: LcuClient, static: StaticData) -> None:
@@ -362,6 +363,13 @@ class Watcher:
         except Exception:
             log.warning("initial sync did not finish", exc_info=True)
 
+        # Last, and on its own: the icons are decoration, so a slow or failing
+        # mirror must not hold up or break anything above it.
+        try:
+            icons.sync(client, self.conn)
+        except Exception:
+            log.debug("icon mirror did not finish", exc_info=True)
+
     def _capture_ranks(self, client: LcuClient, match) -> None:
         """Pin every player's current rank to this game.
 
@@ -434,6 +442,14 @@ class Watcher:
         """
         await asyncio.sleep(SWEEP_DELAY_SECONDS)
         await asyncio.to_thread(self._settle_lp, client)
+
+        # The game just played almost certainly brought in a champion or an item
+        # not mirrored yet, and this is the last moment the client is reliably
+        # open to ask.
+        try:
+            await asyncio.to_thread(icons.sync, client, self.conn)
+        except Exception:
+            log.debug("icon mirror did not finish", exc_info=True)
 
         if not self.sweep_after_game:
             return
