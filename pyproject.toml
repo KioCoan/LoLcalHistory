@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "lolcal-history"
 # Kept in step with lolhist/version.py, which is what the app and the update
@@ -12,7 +16,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+# pyyaml is here so the test that parses the release workflow actually runs on
+# CI. Without it that test quietly skips — on the one machine whose job is to
+# catch a broken workflow.
+dev = ["pytest>=8", "pyyaml>=6"]
 # The native window and tray icon. Not required to run the CLI or `serve`, but
 # the packaged app is nothing without them — declared so a clean CI machine
 # builds the same executable as a development checkout.
@@ -22,6 +29,16 @@ desktop = [
     "pillow>=10",
 ]
 build = ["pyinstaller>=6.10"]
+
+# Spelled out rather than auto-discovered. This is a flat layout with several
+# top-level directories — tests, tools, installer, and data when it exists — and
+# setuptools refuses to guess between them, which is what broke the first
+# release build at `pip install -e .`.
+[tool.setuptools]
+packages = ["lolhist", "lolhist.web"]
+
+[tool.setuptools.package-data]
+lolhist = ["schema.sql", "assets/*", "web/templates/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

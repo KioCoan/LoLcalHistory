@@ -23,6 +23,13 @@
   #define AppVersion "0.0.0"
 #endif
 
+; The displayed version may carry a label ("0.2.0-rc1"); the one Windows stores
+; in the file's version resource may not — Inno rejects anything that is not
+; purely numeric. The workflow passes the stripped form separately.
+#ifndef NumericVersion
+  #define NumericVersion AppVersion
+#endif
+
 #define AppName "LoLcal History"
 #define AppExe "LoLcal History.exe"
 #define AppPublisher "KioCoan"
@@ -35,7 +42,7 @@ AppId={{8F3A6C21-5D74-4B2E-9A18-6C0E7B4D91F2}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#NumericVersion}
 AppPublisher={#AppPublisher}
 AppPublisherURL={#AppUrl}
 AppSupportURL={#AppUrl}/issues

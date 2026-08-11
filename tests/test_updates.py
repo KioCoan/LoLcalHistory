@@ -340,6 +340,36 @@ class TestReleasePipeline:
         assert built.lower().endswith("setup.exe")
         assert updates.CHECKSUM_ASSET in WORKFLOW.read_text(encoding="utf-8")
 
+    def test_the_project_declares_how_to_build_itself(self):
+        """The first release build died here.
+
+        CI installs the project to get its extras, but the package had no
+        `[build-system]` and no explicit package list. setuptools' flat-layout
+        discovery then found `lolhist` next to `tests`, `tools`, `installer` and
+        `data`, refused to guess, and failed before a single test ran. Nothing
+        locally exercised `pip install -e .`, so it went unnoticed.
+        """
+        pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        assert "[build-system]" in pyproject
+        assert "build-backend" in pyproject
+        assert '"lolhist"' in pyproject, "packages must be listed, not discovered"
+
+    def test_the_workflow_installs_what_the_tests_import(self):
+        """A dependency missing from the dev extras makes its test skip on CI,
+        which looks identical to passing."""
+        pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        assert "pyyaml" in pyproject.lower()
+
+    def test_a_labelled_version_does_not_break_the_file_version(self):
+        """Windows' version resource takes digits and dots only, so Inno aborts
+        on "0.0.0-test" — which was the rehearsal button's default input."""
+        iss = ISS.read_text(encoding="utf-8")
+        assert "VersionInfoVersion={#NumericVersion}" in iss
+
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        assert "DNumericVersion" in workflow
+        assert "numeric=" in workflow
+
     def test_the_declared_version_matches_pyproject(self):
         """The workflow checks the tag against version.py; keep pyproject with
         it so the package and the app never disagree."""

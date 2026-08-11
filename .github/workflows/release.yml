@@ -56,13 +56,21 @@ jobs:
               Write-Host "::error::Set __version__ = `"$fromTag`" (and pyproject version), commit, then re-tag."
               exit 1
             }
-            "version=$declared"  >> $env:GITHUB_OUTPUT
-            "publish=true"       >> $env:GITHUB_OUTPUT
+            $version = $declared
+            "publish=true" >> $env:GITHUB_OUTPUT
           } else {
-            "version=${{ github.event.inputs.version }}" >> $env:GITHUB_OUTPUT
-            "publish=false"                              >> $env:GITHUB_OUTPUT
+            $version = "${{ github.event.inputs.version }}"
+            "publish=false" >> $env:GITHUB_OUTPUT
           }
-          Write-Host "Building version $declared"
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+          # Windows' version resource accepts digits and dots only, so a label
+          # like "0.2.0-rc1" has to be stripped for it. Inno aborts otherwise.
+          $numeric = [regex]::Match($version, '^\d+(\.\d+){0,3}').Value
+          if (-not $numeric) { $numeric = "0.0.0" }
+          "numeric=$numeric" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Building $version (file version $numeric)"
 
       - name: Build the executable
         run: python -m PyInstaller lolhist.spec --noconfirm --clean
@@ -85,6 +93,7 @@ jobs:
           Write-Host "Using $iscc"
 
           & $iscc "/DAppVersion=${{ steps.version.outputs.version }}" `
+                  "/DNumericVersion=${{ steps.version.outputs.numeric }}" `
                   "installer\lolcal-history.iss"
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed ($LASTEXITCODE)" }
 
