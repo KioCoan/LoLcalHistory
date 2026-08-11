@@ -58,6 +58,54 @@ def _migrate(conn: sqlite3.Connection) -> None:
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
+    _migrate_rank_progress(conn)
+
+
+def _migrate_rank_progress(conn: sqlite3.Connection) -> None:
+    """Attribute the rank series to an account.
+
+    `puuid` belongs in the primary key rather than merely alongside it, and
+    SQLite cannot alter a key in place, so this rebuilds the table. Existing
+    rows predate multi-account support, which means exactly one account can
+    have written them — whichever is in `me` — so the copy is lossless.
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(rank_progress)")}
+    if not existing or "puuid" in existing:
+        return  # fresh database, or already migrated
+
+    owner = conn.execute("SELECT puuid FROM me ORDER BY updated_at DESC LIMIT 1").fetchone()
+    # An empty `me` leaves the observations unattributed rather than guessing.
+    # They then belong to nobody, which is honest: no account will diff against
+    # them, and the next reading starts a clean series.
+    owner_puuid = owner["puuid"] if owner else ""
+
+    conn.execute(
+        """
+        CREATE TABLE rank_progress_migrating (
+            puuid         TEXT    NOT NULL,
+            taken_at      TEXT    NOT NULL,
+            queue_type    TEXT    NOT NULL,
+            tier          TEXT,
+            division      TEXT,
+            league_points INTEGER,
+            wins          INTEGER,
+            losses        INTEGER,
+            PRIMARY KEY (puuid, taken_at, queue_type)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO rank_progress_migrating
+            (puuid, taken_at, queue_type, tier, division, league_points, wins, losses)
+        SELECT ?, taken_at, queue_type, tier, division, league_points, wins, losses
+        FROM rank_progress
+        """,
+        (owner_puuid,),
+    )
+    conn.execute("DROP TABLE rank_progress")
+    conn.execute("ALTER TABLE rank_progress_migrating RENAME TO rank_progress")
+
 
 def open_db(path: Path | None = None) -> sqlite3.Connection:
     """Open the database, creating it and its schema if needed."""
@@ -108,6 +156,34 @@ def set_me(conn: sqlite3.Connection, puuid: str, game_name: str | None, tagline:
 def my_puuids(conn: sqlite3.Connection) -> set[str]:
     with _DB_LOCK:
         return {row["puuid"] for row in conn.execute("SELECT puuid FROM me")}
+
+
+def active_puuid(conn: sqlite3.Connection) -> str | None:
+    """The account most recently seen logged in.
+
+    `set_me` runs on every session connect, so `updated_at` already tracks this
+    — the account currently in the client keeps being touched while the others
+    go stale. No extra bookkeeping needed.
+    """
+    with _DB_LOCK:
+        row = conn.execute(
+            "SELECT puuid FROM me ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+    return row["puuid"] if row else None
+
+
+def accounts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Every account this database holds, most recently seen first."""
+    with _DB_LOCK:
+        rows = conn.execute(
+            """
+            SELECT me.puuid, me.riot_id_game_name, me.riot_id_tagline, me.updated_at,
+                   (SELECT COUNT(*) FROM v_my_matches v WHERE v.puuid = me.puuid) AS games
+            FROM me
+            ORDER BY me.updated_at DESC
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def known_keys(conn: sqlite3.Connection) -> dict[tuple[int, str], int]:
@@ -265,8 +341,10 @@ def save_participant_ranks(
     return written
 
 
-def save_rank_progress(conn: sqlite3.Connection, ranks: dict) -> None:
-    """Append an observation of your own rank."""
+def save_rank_progress(conn: sqlite3.Connection, ranks: dict, puuid: str) -> None:
+    """Append an observation of one account's rank."""
+    if not puuid:
+        return  # an unattributed observation would pollute somebody's series
     now = _now()
     with _DB_LOCK:
         for rank in ranks.values():
@@ -275,30 +353,37 @@ def save_rank_progress(conn: sqlite3.Connection, ranks: dict) -> None:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO rank_progress
-                    (taken_at, queue_type, tier, division, league_points, wins, losses)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (puuid, taken_at, queue_type, tier, division, league_points,
+                     wins, losses)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    now, rank.queue_type, rank.tier, rank.division,
+                    puuid, now, rank.queue_type, rank.tier, rank.division,
                     rank.league_points, rank.wins, rank.losses,
                 ),
             )
         conn.commit()
 
 
-def latest_rank_progress(conn: sqlite3.Connection) -> dict:
-    """The most recent observation of each of your ladders."""
+def latest_rank_progress(conn: sqlite3.Connection, puuid: str) -> dict:
+    """The most recent observation of each of one account's ladders."""
     from .ranked import Rank
+
+    if not puuid:
+        return {}
 
     with _DB_LOCK:
         rows = conn.execute(
             """
             SELECT queue_type, tier, division, league_points, wins, losses
             FROM rank_progress
-            WHERE (queue_type, taken_at) IN (
-                SELECT queue_type, MAX(taken_at) FROM rank_progress GROUP BY queue_type
+            WHERE puuid = ?
+              AND (queue_type, taken_at) IN (
+                SELECT queue_type, MAX(taken_at) FROM rank_progress
+                WHERE puuid = ? GROUP BY queue_type
             )
-            """
+            """,
+            (puuid, puuid),
         ).fetchall()
     return {
         row["queue_type"]: Rank(
@@ -359,32 +444,41 @@ def record_rank_before(
         conn.commit()
 
 
-def pending_lp_match(conn: sqlite3.Connection, max_age_hours: int = 6):
-    """The most recent game still waiting for its LP change to be worked out.
+def pending_lp_match(conn: sqlite3.Connection, puuid: str, max_age_hours: int = 6):
+    """The most recent game one account is still waiting on an LP change for.
 
     Only ever one, and only a recent one: if several ranked games have gone by
     unsettled, the current rank cannot say which game moved what, and a guess
     would be worse than leaving it blank.
+
+    Scoped to the account that played the game. Otherwise logging into a second
+    account would settle the first account's pending game against the second
+    account's rank.
     """
+    if not puuid:
+        return None
     with _DB_LOCK:
         return conn.execute(
             """
-            SELECT game_id, platform_id, my_rank_queue, my_lp_before,
-                   my_tier_before, my_division_before, game_creation_ms
-            FROM matches
-            WHERE my_lp_before IS NOT NULL
-              AND my_lp_delta IS NULL
-              AND my_rank_queue IS NOT NULL
-              AND game_creation_ms >= (CAST(strftime('%s','now') AS INTEGER) - ?) * 1000
-            ORDER BY game_creation_ms DESC
+            SELECT m.game_id, m.platform_id, m.my_rank_queue, m.my_lp_before,
+                   m.my_tier_before, m.my_division_before, m.game_creation_ms
+            FROM matches m
+            JOIN participants p
+              ON p.game_id = m.game_id AND p.platform_id = m.platform_id
+            WHERE p.puuid = ?
+              AND m.my_lp_before IS NOT NULL
+              AND m.my_lp_delta IS NULL
+              AND m.my_rank_queue IS NOT NULL
+              AND m.game_creation_ms >= (CAST(strftime('%s','now') AS INTEGER) - ?) * 1000
+            ORDER BY m.game_creation_ms DESC
             LIMIT 1
             """,
-            (max_age_hours * 3600,),
+            (puuid, max_age_hours * 3600),
         ).fetchone()
 
 
-def derive_lp_from_snapshots(conn: sqlite3.Connection) -> int:
-    """Recover LP changes from the rank snapshots already on record.
+def derive_lp_from_snapshots(conn: sqlite3.Connection, puuid: str) -> int:
+    """Recover one account's LP changes from the rank snapshots already on record.
 
     Every live capture pins your rank as it stood just after that game. Two
     consecutive games on the same ladder therefore bracket a change, and the
@@ -393,9 +487,13 @@ def derive_lp_from_snapshots(conn: sqlite3.Connection) -> int:
 
     Only games that actually move a ladder are chained: an ARAM game sitting
     between two Classic games has a solo-queue snapshot, but attributing Classic
-    movement across it would be wrong.
+    movement across it would be wrong. Games belonging to a different account
+    are excluded for the same reason, one step further out.
     """
     from . import ranked
+
+    if not puuid:
+        return 0
 
     filled = 0
     with _DB_LOCK:
@@ -410,9 +508,10 @@ def derive_lp_from_snapshots(conn: sqlite3.Connection) -> int:
                 JOIN participant_ranks pr
                   ON  pr.game_id = v.game_id AND pr.platform_id = v.platform_id
                   AND pr.participant_id = v.participant_id AND pr.queue_type = ?
+                WHERE v.puuid = ?
                 ORDER BY m.game_creation_ms ASC
                 """,
-                (ladder,),
+                (ladder, puuid),
             ).fetchall()
 
             on_ladder = [

@@ -13,7 +13,7 @@ from typing import Any
 
 from flask import Flask, jsonify, render_template, request, send_file
 
-from .. import config, health, ranked
+from .. import config, health, ranked, store
 
 
 def get_conn() -> sqlite3.Connection:
@@ -26,30 +26,57 @@ def _rows(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> list[dict[s
     return [dict(row) for row in conn.execute(sql, params)]
 
 
-def _filters() -> tuple[str, list]:
-    """Build the shared WHERE fragment for queue / champion / recency filters."""
+def _selected_account(conn: sqlite3.Connection) -> str | None:
+    """Whose history to show: the requested account, else whoever is logged in.
+
+    Resolved on the server rather than left to the page. A dashboard left open
+    across an account switch would otherwise fall back to showing both accounts
+    pooled together, which is exactly the confusion this is here to prevent.
+
+    None only when no account is known yet — a database backfilled before the
+    watcher has ever connected. Nothing is scoped in that case, which shows
+    everything rather than nothing.
+    """
+    requested = request.args.get("account")
+    if requested:
+        return requested
+    return store.active_puuid(conn)
+
+
+def _filters(conn: sqlite3.Connection) -> tuple[str, list, str | None]:
+    """Build the shared WHERE fragment for account / queue / champion / recency.
+
+    Column names are qualified, so every caller must alias `v_my_matches` as
+    `v`. Bare names broke the moment the fragment was spliced beside a join on
+    `participants`, which has its own `champion_id` and `puuid`.
+    """
     clauses: list[str] = []
     params: list = []
 
+    account = _selected_account(conn)
+    if account:
+        clauses.append("v.puuid = ?")
+        params.append(account)
+
     queue = request.args.get("queue", type=int)
     if queue is not None:
-        clauses.append("queue_id = ?")
+        clauses.append("v.queue_id = ?")
         params.append(queue)
 
     champion = request.args.get("champion", type=int)
     if champion is not None:
-        clauses.append("champion_id = ?")
+        clauses.append("v.champion_id = ?")
         params.append(champion)
 
     days = request.args.get("days", type=int)
     if days:
         clauses.append(
-            "game_creation_ms >= (CAST(strftime('%s', 'now') AS INTEGER) - ?) * 1000"
+            "v.game_creation_ms >= (CAST(strftime('%s', 'now') AS INTEGER) - ?) * 1000"
         )
         params.append(days * 86400)
 
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    return where, params
+    return where, params, account
 
 
 def create_app() -> Flask:
@@ -86,44 +113,69 @@ def create_app() -> Flask:
             }
         )
 
+    @app.route("/api/accounts")
+    def api_accounts():
+        """Every account in this database, most recently logged in first."""
+        with get_conn() as conn:
+            return jsonify(
+                {"accounts": store.accounts(conn), "selected": _selected_account(conn)}
+            )
+
     @app.route("/api/filters")
     def api_filters():
+        """The queue and champion lists, scoped to the selected account.
+
+        Deliberately ignores the queue/champion filters themselves — a filter
+        list that narrowed as you used it would strand you on one option.
+        """
         with get_conn() as conn:
+            account = _selected_account(conn)
+            scope = " WHERE v.puuid = ?" if account else ""
+            params = (account,) if account else ()
             return jsonify(
                 {
                     "queues": _rows(
                         conn,
-                        "SELECT queue_id, COALESCE(queue_name, game_mode, 'Queue ' || queue_id)"
-                        " AS queue_name, COUNT(*) AS games FROM v_my_matches"
-                        " GROUP BY queue_id ORDER BY games DESC",
+                        "SELECT v.queue_id,"
+                        " COALESCE(v.queue_name, v.game_mode, 'Queue ' || v.queue_id)"
+                        " AS queue_name, COUNT(*) AS games FROM v_my_matches v"
+                        f"{scope} GROUP BY v.queue_id ORDER BY games DESC",
+                        params,
                     ),
                     "champions": _rows(
                         conn,
-                        "SELECT champion_id, champion_name, COUNT(*) AS games"
-                        " FROM v_my_matches WHERE champion_id IS NOT NULL"
-                        " GROUP BY champion_id ORDER BY champion_name",
+                        "SELECT v.champion_id, v.champion_name, COUNT(*) AS games"
+                        " FROM v_my_matches v"
+                        f"{scope}{' AND' if scope else ' WHERE'} v.champion_id IS NOT NULL"
+                        " GROUP BY v.champion_id ORDER BY v.champion_name",
+                        params,
                     ),
                 }
             )
 
     @app.route("/api/summary")
     def api_summary():
-        where, params = _filters()
         with get_conn() as conn:
+            where, params, selected = _filters(conn)
             summary = conn.execute(
                 f"""
                 SELECT COUNT(*) AS games,
-                       SUM(COALESCE(win, 0)) AS wins,
-                       SUM(COALESCE(game_duration_s, 0)) AS seconds,
-                       SUM(COALESCE(kills, 0)) AS kills,
-                       SUM(COALESCE(deaths, 0)) AS deaths,
-                       SUM(COALESCE(assists, 0)) AS assists
-                FROM v_my_matches{where}
+                       SUM(COALESCE(v.win, 0)) AS wins,
+                       SUM(COALESCE(v.game_duration_s, 0)) AS seconds,
+                       SUM(COALESCE(v.kills, 0)) AS kills,
+                       SUM(COALESCE(v.deaths, 0)) AS deaths,
+                       SUM(COALESCE(v.assists, 0)) AS assists
+                FROM v_my_matches v{where}
                 """,
                 tuple(params),
             ).fetchone()
+            # The name shown must be the account these numbers belong to. The
+            # old `LIMIT 1` picked one arbitrarily, so a second account made the
+            # header label somebody else's games.
             account = conn.execute(
-                "SELECT riot_id_game_name, riot_id_tagline FROM me LIMIT 1"
+                "SELECT riot_id_game_name, riot_id_tagline FROM me"
+                " WHERE puuid = ? LIMIT 1",
+                (selected or "",),
             ).fetchone()
             return jsonify(
                 {
@@ -134,36 +186,42 @@ def create_app() -> Flask:
 
     @app.route("/api/matches")
     def api_matches():
-        where, params = _filters()
         limit = min(request.args.get("limit", default=200, type=int), 1000)
         with get_conn() as conn:
+            where, params, selected = _filters(conn)
             matches = _rows(
                 conn,
                 f"""
-                SELECT game_id, platform_id, queue_id, queue_name, game_mode,
-                       game_creation_ms, game_duration_s, champion_id, champion_name,
-                       win, placement, kills, deaths, assists, cs, gold_earned,
-                       damage_to_champions, vision_score, source, team_id, participant_id,
-                       my_rank_queue, my_lp_delta, my_lp_after, my_tier_after,
-                       my_division_after
-                FROM v_my_matches{where}
-                ORDER BY game_creation_ms DESC LIMIT ?
+                SELECT v.game_id, v.platform_id, v.queue_id, v.queue_name, v.game_mode,
+                       v.game_creation_ms, v.game_duration_s, v.champion_id,
+                       v.champion_name, v.win, v.placement, v.kills, v.deaths,
+                       v.assists, v.cs, v.gold_earned, v.damage_to_champions,
+                       v.vision_score, v.source, v.team_id, v.participant_id,
+                       v.my_rank_queue, v.my_lp_delta, v.my_lp_after, v.my_tier_after,
+                       v.my_division_after
+                FROM v_my_matches v{where}
+                ORDER BY v.game_creation_ms DESC LIMIT ?
                 """,
                 tuple(params) + (limit,),
             )
-            me = {row["puuid"] for row in conn.execute("SELECT puuid FROM me")}
+            mine = (
+                {selected}
+                if selected
+                else {row["puuid"] for row in conn.execute("SELECT puuid FROM me")}
+            )
 
             # Attach augments and team-mates per match so the row can expand.
             for match in matches:
+                # Keyed straight off this row's participant. Going through the
+                # view would pull in a second set of augments for a game both
+                # of your accounts played.
                 match["augments"] = [
                     row["augment_name"]
                     for row in conn.execute(
-                        "SELECT a.augment_name FROM participant_augments a"
-                        " JOIN v_my_matches v ON v.game_id = a.game_id"
-                        "  AND v.platform_id = a.platform_id"
-                        "  AND v.participant_id = a.participant_id"
-                        " WHERE a.game_id = ? ORDER BY a.slot",
-                        (match["game_id"],),
+                        "SELECT augment_name FROM participant_augments"
+                        " WHERE game_id = ? AND platform_id = ? AND participant_id = ?"
+                        " ORDER BY slot",
+                        (match["game_id"], match["platform_id"], match["participant_id"]),
                     )
                 ]
 
@@ -173,7 +231,7 @@ def create_app() -> Flask:
                 match["rank_queue_type"] = queue_type
                 match["team"] = _team_with_ranks(conn, match, queue_type)
                 match["my_rank"] = next(
-                    (p for p in match["team"] if p["puuid"] in me and p["tier"]), None
+                    (p for p in match["team"] if p["puuid"] in mine and p["tier"]), None
                 )
             return jsonify(matches)
 
@@ -208,25 +266,26 @@ def create_app() -> Flask:
 
     @app.route("/api/champions")
     def api_champions():
-        where, params = _filters()
         with get_conn() as conn:
+            where, params, _selected = _filters(conn)
             return jsonify(
                 _rows(
                     conn,
                     f"""
-                    SELECT champion_id,
-                           COALESCE(champion_name, 'Champion ' || champion_id) AS champion_name,
+                    SELECT v.champion_id,
+                           COALESCE(v.champion_name, 'Champion ' || v.champion_id)
+                               AS champion_name,
                            COUNT(*) AS games,
-                           SUM(COALESCE(win, 0)) AS wins,
-                           COUNT(*) - SUM(COALESCE(win, 0)) AS losses,
-                           ROUND(100.0 * SUM(COALESCE(win, 0)) / COUNT(*), 1) AS win_rate,
-                           ROUND(AVG(kills), 1) AS avg_kills,
-                           ROUND(AVG(deaths), 1) AS avg_deaths,
-                           ROUND(AVG(assists), 1) AS avg_assists,
-                           ROUND(AVG(cs), 0) AS avg_cs,
-                           ROUND(AVG(damage_to_champions), 0) AS avg_damage
-                    FROM v_my_matches{where}
-                    GROUP BY champion_id
+                           SUM(COALESCE(v.win, 0)) AS wins,
+                           COUNT(*) - SUM(COALESCE(v.win, 0)) AS losses,
+                           ROUND(100.0 * SUM(COALESCE(v.win, 0)) / COUNT(*), 1) AS win_rate,
+                           ROUND(AVG(v.kills), 1) AS avg_kills,
+                           ROUND(AVG(v.deaths), 1) AS avg_deaths,
+                           ROUND(AVG(v.assists), 1) AS avg_assists,
+                           ROUND(AVG(v.cs), 0) AS avg_cs,
+                           ROUND(AVG(v.damage_to_champions), 0) AS avg_damage
+                    FROM v_my_matches v{where}
+                    GROUP BY v.champion_id
                     ORDER BY games DESC, win_rate DESC
                     """,
                     tuple(params),
@@ -235,8 +294,8 @@ def create_app() -> Flask:
 
     @app.route("/api/augments")
     def api_augments():
-        where, params = _filters()
         with get_conn() as conn:
+            where, params, _selected = _filters(conn)
             return jsonify(
                 _rows(
                     conn,
@@ -264,9 +323,16 @@ def create_app() -> Flask:
 
     @app.route("/api/teammates")
     def api_teammates():
-        where, params = _filters()
         min_games = request.args.get("min_games", default=2, type=int)
         with get_conn() as conn:
+            where, params, selected = _filters(conn)
+            # Exclude only the account being viewed. A second account of yours
+            # that you actually duo with is a real team-mate, and hiding every
+            # account in `me` made it vanish from this list entirely.
+            if selected:
+                exclude, exclude_params = "t.puuid != ?", (selected,)
+            else:
+                exclude, exclude_params = "t.puuid NOT IN (SELECT puuid FROM me)", ()
             return jsonify(
                 _rows(
                     conn,
@@ -295,12 +361,12 @@ def create_app() -> Flask:
                       ON classic.puuid = t.puuid AND classic.queue_type = 'JADE_RANKED_SOLO_5x5'
                     {where}
                       {'AND' if where else 'WHERE'} t.puuid IS NOT NULL
-                      AND t.puuid NOT IN (SELECT puuid FROM me)
+                      AND {exclude}
                     GROUP BY t.puuid
                     HAVING games >= ?
                     ORDER BY games DESC, win_rate DESC
                     """,
-                    tuple(params) + (min_games,),
+                    tuple(params) + exclude_params + (min_games,),
                 )
             )
 

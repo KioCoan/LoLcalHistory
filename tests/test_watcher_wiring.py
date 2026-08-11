@@ -40,7 +40,11 @@ class StubClient:
 @pytest.fixture
 def watcher(tmp_path):
     conn = store.open_db(tmp_path / "wiring.db")
-    yield Watcher(conn)
+    instance = Watcher(conn)
+    # As a real session leaves it: rank work is scoped to the logged-in account,
+    # so a watcher that has never identified one skips those paths entirely.
+    instance._remember_me(StubClient().current_summoner())
+    yield instance
     conn.close()
 
 

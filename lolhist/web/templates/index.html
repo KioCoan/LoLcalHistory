@@ -105,6 +105,8 @@
   <div class="ok-note" id="watcher"></div>
 
   <div class="bar">
+    <!-- Hidden unless this machine has seen more than one account. -->
+    <select id="f-account" title="Which account's history to show" hidden></select>
     <select id="f-queue"><option value="">All modes</option></select>
     <select id="f-champ"><option value="">All champions</option></select>
     <select id="f-days">
@@ -138,8 +140,14 @@ const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
 const num = (v, d = 0) => (v === null || v === undefined ? "—" : Number(v).toFixed(d));
 
+// null means "follow whoever is logged in", which is what the server does when
+// no account is sent. Only an explicit pick from the selector overrides that, so
+// switching accounts in the client moves the page across on its own.
+let accountChoice = null;
+
 function params() {
   const p = new URLSearchParams();
+  if (accountChoice) p.set("account", accountChoice);
   const q = $("#f-queue").value, c = $("#f-champ").value, d = $("#f-days").value;
   if (q) p.set("queue", q);
   if (c) p.set("champion", c);
@@ -399,10 +407,32 @@ async function refreshHealth() {
     : "Watcher has not run yet — matches here come from history backfill.";
 }
 
+// Only shown once a second account has been seen, so the ordinary single-account
+// window looks exactly as it did before.
+async function refreshAccounts() {
+  const { accounts, selected } = await fetch("/api/accounts").then(r => r.json());
+  const sel = $("#f-account");
+
+  sel.hidden = accounts.length < 2;
+  if (sel.hidden) {
+    accountChoice = null;
+    sel.innerHTML = "";
+    return;
+  }
+
+  sel.innerHTML = accounts.map(a => {
+    const tag = a.riot_id_tagline ? `#${a.riot_id_tagline}` : "";
+    const name = a.riot_id_game_name || "Account";
+    return `<option value="${esc(a.puuid)}">${esc(name + tag)} (${a.games})</option>`;
+  }).join("");
+  // Falls back to the server's choice while nothing has been picked here.
+  sel.value = accountChoice || selected || "";
+}
+
 // Rebuilt on refresh so a newly played champion or mode appears in the filters,
 // while keeping whatever you had selected.
 async function refreshFilters() {
-  const f = await fetch("/api/filters").then(r => r.json());
+  const f = await api("filters");
   const queue = $("#f-queue"), champ = $("#f-champ");
   const keepQueue = queue.value, keepChamp = champ.value;
 
@@ -439,6 +469,7 @@ async function refreshAll({ silent = true } = {}) {
   button.classList.add("busy");
   button.disabled = true;
   try {
+    await refreshAccounts();   // before the rest: it decides what they are scoped to
     await Promise.all([refreshFilters(), refreshSummary(), refreshHealth()]);
     await render({ silent });
     lastRefresh = Date.now();
@@ -456,10 +487,18 @@ async function refreshAll({ silent = true } = {}) {
 }
 
 async function boot() {
+  await refreshAccounts();
   await refreshFilters();
 
   ["#f-queue", "#f-champ", "#f-days"].forEach(sel =>
     $(sel).onchange = () => { refreshSummary(); render(); });
+
+  $("#f-account").onchange = () => {
+    accountChoice = $("#f-account").value || null;
+    // Open rows belong to the account that was on screen a moment ago.
+    expanded.clear();
+    refreshAll({ silent: false });
+  };
 
   $("#refresh").onclick = () => refreshAll({ silent: false });
   document.addEventListener("keydown", (e) => {

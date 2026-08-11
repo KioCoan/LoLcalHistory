@@ -135,8 +135,11 @@ CREATE TABLE IF NOT EXISTS participant_ranks (
 );
 
 -- Your own rank over time, one row per observation. The LP change for a match
--- is derived by differencing consecutive observations.
+-- is derived by differencing consecutive observations, so the series must be
+-- per account: differencing a smurf's Silver against a main's Diamond would
+-- produce a large and entirely fictional number.
 CREATE TABLE IF NOT EXISTS rank_progress (
+    puuid         TEXT    NOT NULL,
     taken_at      TEXT    NOT NULL,
     queue_type    TEXT    NOT NULL,
     tier          TEXT,
@@ -144,7 +147,7 @@ CREATE TABLE IF NOT EXISTS rank_progress (
     league_points INTEGER,
     wins          INTEGER,
     losses        INTEGER,
-    PRIMARY KEY (taken_at, queue_type)
+    PRIMARY KEY (puuid, taken_at, queue_type)
 );
 
 DROP VIEW IF EXISTS v_my_matches;
@@ -162,6 +165,10 @@ JOIN participants p
   ON p.game_id = m.game_id AND p.platform_id = m.platform_id
 JOIN me ON me.puuid = p.puuid;
 
+-- The aggregate views below pool every account in `me`, because a view takes no
+-- parameters. They are kept for ad-hoc SQL; anything user-facing filters
+-- `v_my_matches` by puuid instead so a second account cannot merge into the
+-- first (see store.active_puuid).
 DROP VIEW IF EXISTS v_champion_stats;
 CREATE VIEW v_champion_stats AS
 SELECT

@@ -62,7 +62,7 @@ class TestSettlement:
         before = Rank(CLASSIC, "SILVER", "II", 97)
         store.record_rank_before(conn, match.key, CLASSIC, before)
 
-        pending = store.pending_lp_match(conn)
+        pending = store.pending_lp_match(conn, "me")
         assert pending is not None
         assert pending["my_lp_before"] == 97
         assert pending["my_rank_queue"] == CLASSIC
@@ -83,7 +83,7 @@ class TestSettlement:
         store.upsert_match(conn, match)
         store.record_rank_before(conn, match.key, CLASSIC, Rank(CLASSIC, "SILVER", "II", 97))
         store.record_lp_change(conn, match.key, CLASSIC, 18, Rank(CLASSIC, "SILVER", "II", 115))
-        assert store.pending_lp_match(conn) is None
+        assert store.pending_lp_match(conn, "me") is None
 
     def test_only_the_most_recent_pending_game_is_offered(self, conn):
         """Two unsettled games mean the current rank cannot say which moved what."""
@@ -95,7 +95,7 @@ class TestSettlement:
                 conn, match.key, CLASSIC, Rank(CLASSIC, "SILVER", "II", 97)
             )
 
-        pending = store.pending_lp_match(conn)
+        pending = store.pending_lp_match(conn, "me")
         assert pending["game_id"] == 2
 
     def test_stale_games_are_never_settled(self, conn):
@@ -103,7 +103,7 @@ class TestSettlement:
         old = a_match(game_id=3, creation_ms=1_600_000_000_000)
         store.upsert_match(conn, old)
         store.record_rank_before(conn, old.key, CLASSIC, Rank(CLASSIC, "SILVER", "II", 97))
-        assert store.pending_lp_match(conn, max_age_hours=6) is None
+        assert store.pending_lp_match(conn, "me", max_age_hours=6) is None
 
     def test_derives_lp_from_consecutive_snapshots(self, conn):
         """Games captured before LP tracking existed can still be recovered."""
@@ -123,7 +123,7 @@ class TestSettlement:
         add(1, 1_786_000_000_000, 55)
         add(2, 1_786_000_600_000, 84)
 
-        assert store.derive_lp_from_snapshots(conn) == 1
+        assert store.derive_lp_from_snapshots(conn, "me") == 1
         row = conn.execute(
             "SELECT my_lp_delta, my_lp_after FROM matches WHERE game_id = 2"
         ).fetchone()
@@ -155,7 +155,7 @@ class TestSettlement:
         add(2, 1_786_000_300_000, 55, 2400, "KIWI")   # Mayhem, changes nothing
         add(3, 1_786_000_600_000, 84, 4310, "JADE")
 
-        store.derive_lp_from_snapshots(conn)
+        store.derive_lp_from_snapshots(conn, "me")
         deltas = dict(conn.execute("SELECT game_id, my_lp_delta FROM matches"))
         assert deltas[3] == 29, "chained across the unrelated game"
         assert deltas[2] is None, "Mayhem cannot move the Classic ladder"
@@ -171,8 +171,8 @@ class TestSettlement:
             )
         conn.commit()
 
-        assert store.derive_lp_from_snapshots(conn) == 1
-        assert store.derive_lp_from_snapshots(conn) == 0
+        assert store.derive_lp_from_snapshots(conn, "me") == 1
+        assert store.derive_lp_from_snapshots(conn, "me") == 0
 
     def test_recording_before_does_not_clobber_a_settled_delta(self, conn):
         match = a_match()

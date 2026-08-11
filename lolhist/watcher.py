@@ -77,11 +77,18 @@ class Watcher:
         self._captured_this_cycle = False
         self._last_heartbeat = 0.0
         self._platform_id = ""
-        # Your own ladders as last observed, so the next game's LP change can be
-        # measured against them.
+        # Which account is logged in right now. Everything rank-related is
+        # scoped to it: a second account has its own ladders, and measuring one
+        # against the other invents LP changes that never happened.
+        self._me_puuid = ""
+        # That account's ladders as last observed, so the next game's LP change
+        # can be measured against them.
         self._my_ranks: dict = {}
         self._last_captured: tuple | None = None
-        self._synced = False
+        # Accounts whose client-side history has been imported this run. A set
+        # rather than a flag so switching accounts mid-run imports the new one
+        # instead of leaving its history missing until the app restarts.
+        self._synced: set[str] = set()
 
     async def run_forever(self) -> None:
         delay = RECONNECT_MIN_SECONDS
@@ -125,8 +132,11 @@ class Watcher:
             for line in health.describe():
                 log.info("  %s", line)
 
-            if not self._synced:
-                self._synced = True
+            # Falls back to a sentinel so a client that reports no puuid still
+            # gets its history imported once, as it did before.
+            sync_key = self._me_puuid or "?"
+            if sync_key not in self._synced:
+                self._synced.add(sync_key)
                 await asyncio.to_thread(self._initial_sync, client, static)
 
             async with ws_connect(
@@ -146,6 +156,7 @@ class Watcher:
     def _remember_me(self, summoner: dict[str, Any]) -> None:
         puuid = summoner.get("puuid")
         if puuid:
+            self._me_puuid = puuid
             store.set_me(
                 self.conn,
                 puuid,
@@ -259,11 +270,19 @@ class Watcher:
         Prefers the last observation on record over a fresh read: if the
         watcher was restarted between games, the stored value is the one from
         before the game, and reading now would show a difference of zero.
+
+        Reading it back scoped to this account is what makes a switch safe —
+        the baseline comes from the same ladder that will be measured against.
         """
-        self._my_ranks = store.latest_rank_progress(self.conn)
+        if not self._me_puuid:
+            log.debug("no puuid for the current account; skipping rank tracking")
+            self._my_ranks = {}
+            return
+
+        self._my_ranks = store.latest_rank_progress(self.conn, self._me_puuid)
         if not self._my_ranks:
             self._my_ranks = ranked.fetch_mine(client)
-            store.save_rank_progress(self.conn, self._my_ranks)
+            store.save_rank_progress(self.conn, self._my_ranks, self._me_puuid)
 
         # A game may have finished after the app was last closed. Its "before"
         # rank is on record, so the change it caused can still be worked out.
@@ -339,7 +358,7 @@ class Watcher:
                 store.save_player_ranks(self.conn, ranks)
                 log.info("looked up ranks for %s player(s)", len(ranks))
 
-            store.derive_lp_from_snapshots(self.conn)
+            store.derive_lp_from_snapshots(self.conn, self._me_puuid)
         except Exception:
             log.warning("initial sync did not finish", exc_info=True)
 
@@ -376,11 +395,14 @@ class Watcher:
         it works on a later launch just as well as immediately after the game.
         Called at capture, again after the game settles, and at startup.
         """
+        if not self._me_puuid:
+            return
+
         current = ranked.fetch_mine(client)
         if not current:
             return
 
-        row = store.pending_lp_match(self.conn)
+        row = store.pending_lp_match(self.conn, self._me_puuid)
         if row is not None:
             queue_type = row["my_rank_queue"]
             before = ranked.Rank(
@@ -400,7 +422,7 @@ class Watcher:
                     row["game_id"], delta, queue_type, after.label() or "unranked",
                 )
 
-        store.save_rank_progress(self.conn, current)
+        store.save_rank_progress(self.conn, current, self._me_puuid)
         self._my_ranks = current
 
     async def _after_game(self, client: LcuClient, static: StaticData) -> None:

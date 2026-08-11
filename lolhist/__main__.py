@@ -159,12 +159,13 @@ def cmd_ranks(args: argparse.Namespace) -> int:
 
     conn = store.open_db()
     with client:
+        me_puuid = client.current_summoner().get("puuid") or ""
         mine = ranked.fetch_mine(client)
-        if mine:
-            store.save_rank_progress(conn, mine)
-            summoner = client.current_summoner()
-            if summoner.get("puuid"):
-                store.save_player_ranks(conn, {summoner["puuid"]: mine})
+        if mine and me_puuid:
+            # Scoped to the logged-in account: a second account's ladders are
+            # its own, and mixing the two series invents LP changes.
+            store.save_rank_progress(conn, mine, me_puuid)
+            store.save_player_ranks(conn, {me_puuid: mine})
             print("Your ladders:")
             for rank in mine.values():
                 if rank.is_ranked:
@@ -180,7 +181,7 @@ def cmd_ranks(args: argparse.Namespace) -> int:
         results = ranked.fetch_many(client, targets)
         written = store.save_player_ranks(conn, results)
 
-    derived = store.derive_lp_from_snapshots(conn)
+    derived = store.derive_lp_from_snapshots(conn, me_puuid)
     if derived:
         print(f"\nWorked out the LP change for {derived} earlier game(s) from stored snapshots.")
 
@@ -283,11 +284,32 @@ def cmd_stats(args: argparse.Namespace) -> int:
         conn.close()
         return 0
 
+    # Scoped to the account last logged in. `v_champion_stats` pools every
+    # account in `me`, which is wrong the moment there is more than one.
+    me_puuid = store.active_puuid(conn)
+    scope = " WHERE puuid = ?" if me_puuid else ""
     rows = conn.execute(
-        "SELECT champion_name, games, wins, losses, win_rate, avg_kills, avg_deaths, avg_assists"
-        " FROM v_champion_stats ORDER BY games DESC, win_rate DESC LIMIT ?",
-        (args.limit,),
+        "SELECT COALESCE(champion_name, 'Champion ' || champion_id) AS champion_name,"
+        "       COUNT(*) AS games,"
+        "       SUM(COALESCE(win, 0)) AS wins,"
+        "       COUNT(*) - SUM(COALESCE(win, 0)) AS losses,"
+        "       ROUND(100.0 * SUM(COALESCE(win, 0)) / COUNT(*), 1) AS win_rate,"
+        "       ROUND(AVG(kills), 1) AS avg_kills,"
+        "       ROUND(AVG(deaths), 1) AS avg_deaths,"
+        "       ROUND(AVG(assists), 1) AS avg_assists"
+        f" FROM v_my_matches{scope}"
+        " GROUP BY champion_id ORDER BY games DESC, win_rate DESC LIMIT ?",
+        ((me_puuid, args.limit) if me_puuid else (args.limit,)),
     ).fetchall()
+
+    known = store.accounts(conn)
+    if len(known) > 1:
+        current = next((a for a in known if a["puuid"] == me_puuid), None)
+        if current:
+            tag = f"#{current['riot_id_tagline']}" if current["riot_id_tagline"] else ""
+            print(f"Showing {current['riot_id_game_name']}{tag} "
+                  f"({len(known)} accounts on this machine)\n")
+
     print(f"{'Champion':<16}{'G':>4}{'W':>4}{'L':>4}{'WR%':>7}   KDA")
     for row in rows:
         kda = f"{row['avg_kills']}/{row['avg_deaths']}/{row['avg_assists']}"
