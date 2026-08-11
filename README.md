@@ -48,14 +48,13 @@ upgrade or an uninstall.
 ### Cutting a release
 
 The version in `lolhist/version.py` is the source of truth, and the workflow fails the
-build if a tag disagrees with it.
+build if a tag disagrees with it. `pyproject.toml` has to match too, so bump both with:
 
 ```bash
-# bump __version__ in lolhist/version.py and version in pyproject.toml, then:
-git commit -am "Release 0.2.0"
-git tag v0.2.0
-git push origin main --tags
+.venv/Scripts/python.exe tools/bump_version.py 0.2.0
 ```
+
+It prints the commit, tag and push commands to run next.
 
 `.github/workflows/release.yml` runs the tests, builds the executable, compiles the Inno
 Setup installer and publishes a release with the installer, a portable exe and
