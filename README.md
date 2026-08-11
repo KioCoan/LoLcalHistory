@@ -22,7 +22,8 @@ For the modes this was built for, the public API is closed, not merely inconveni
 **Nothing about your games ever leaves this machine.** No upload, no sync, no telemetry,
 no export. Champion, queue, item and augment names — and every icon on the dashboard —
 come from the game client's own files, not from Data Dragon, CommunityDragon or any CDN.
-`data/` is gitignored.
+Your history is not in the repository at all — it lives in `%LOCALAPPDATA%\LoLcal History`,
+and the legacy `data/` folder is gitignored along with the build output.
 
 That matters beyond preference: Riot asked that League Classic data not be aggregated or
 displayed publicly. A private record of your own games, that never leaves your machine,
@@ -63,16 +64,18 @@ publishing anything.
 
 ## The app
 
-The normal way to use this is the desktop app: one executable that tracks your games
-*and* shows them, with no terminal and no browser.
+The normal way to use this is the desktop app the installer above gives you: one
+executable that tracks your games *and* shows them, with no terminal and no browser. It
+opens a native window with the dashboard while the watcher records games in the
+background.
+
+To build it yourself from a checkout:
 
 ```powershell
 .\build-app.ps1
 ```
 
-That produces `dist\LoLcal History.exe` (~26 MB, single file). Double-click it and it
-opens a native window with the dashboard, while the watcher records games in the
-background.
+That produces `dist\LoLcal History.exe` (~26 MB, single file), which runs the same way.
 
 **Closing the window does not stop tracking.** It hides to the system tray, because you
 will close it while playing and quitting would lose exactly the games you were about to
@@ -92,10 +95,52 @@ are keyed by game id rather than position, so a newly finished game arriving at 
 cannot shift an expanded row onto a different match. Refreshes pause while the window is
 hidden in the tray.
 
-Your history lives in `%LOCALAPPDATA%\LoLcal History` — the app and the CLI share it.
-A frozen build unpacks to a temporary folder that is deleted on exit, so the database
-cannot live beside the executable. Errors go to `app.log` in that same folder, since a
-windowed app has nowhere to print.
+**Launching it twice** does not start a second copy — two watchers on one database would
+both record every game and contend over the same rows. The second launch raises the
+window of the one already running, which is what you wanted anyway if it was sitting in
+the tray.
+
+The current version is shown in the footer, alongside whether a newer release exists.
+
+## What a match row shows
+
+When, mode, champion, result, rank, LP, K/D/A, CS, damage, build, length and which
+capture path recorded it.
+
+The champion carries its portrait, and the build is the whole loadout: summoner spells,
+six item slots, then the trinket set slightly apart. Hovering an item names it. Empty
+slots are drawn rather than skipped, so a four-item game cannot be mistaken for a
+six-item one.
+
+Clicking a row expands it into a scoreboard: both teams with their portraits, builds,
+K/D/A and rank on whichever ladder the mode uses, plus your augments for the game.
+
+Icons are optional throughout. Until the watcher has run once there are none, and every
+one that is missing simply leaves the name it sat beside — the layout does not depend on
+the picture arriving.
+
+## More than one account
+
+The database holds every account you sign in with, and attributes each stat to the one
+that earned it. A selector appears in the filter bar **only when a second account has
+been seen**, so the ordinary single-account window is unchanged.
+
+The view defaults to whichever account is currently logged in, resolved on the server, so
+a dashboard left open across a switch follows you rather than quietly pooling two
+accounts' games. Picking an account explicitly overrides that until you change it back.
+
+Rank series are kept per account. This matters more than it sounds: they were once shared,
+so the first game after signing into a smurf measured its Silver against the main's
+Diamond and invented a large LP change. An alt you actually duo with now shows up in
+Teammates instead of being hidden.
+
+## Where your data lives
+
+Your history lives in `%LOCALAPPDATA%\LoLcal History` — the app and the CLI share it,
+along with the raw archive, the icon mirror and the cached asset names. A frozen build
+unpacks to a temporary folder that is deleted on exit, so the database cannot live beside
+the executable. Errors go to `app.log` in that same folder, since a windowed app has
+nowhere to print.
 
 If you used an earlier build, the old `lol-local-history` folder is moved across on first
 run. That is a single atomic rename, and if it cannot happen — the app is already open,
@@ -112,8 +157,11 @@ Upgrading from a source checkout that kept its data in `data/`:
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,desktop]"
 ```
+
+`desktop` pulls in the native window and tray icon; without it everything works
+except `lolhist gui`. Add `build` as well if you want to produce the executable.
 
 ## Use
 
@@ -151,20 +199,24 @@ Fetch ranks for everyone you have played with:
 ```
 
 Other commands: `lolhist stats` for a quick terminal summary, `lolhist probe` to dump raw
-client payloads to `data/samples/` when something needs diagnosing, and
+client payloads to the `samples/` folder when something needs diagnosing, and
 `lolhist resolve-names` to rebuild champion, queue and augment names from the stored ids
 — useful after a patch adds augments your cached assets did not know about.
 
+All of those folders live under `%LOCALAPPDATA%\LoLcal History`, not in the checkout.
+
 ## Sharing it with someone else
 
-`dist\LoLcal History.exe` is self-contained and account-agnostic. Nothing about your
-account, region or install path is baked into it — the League install is looked up from
-Riot's own `RiotClientInstalls.json`, so another drive works with no edits, and the
-account, region and platform all come from whichever client is running.
+Send them the [releases page](https://github.com/KioCoan/LoLcalHistory/releases). The
+installer is self-contained and account-agnostic: nothing about your account, region or
+install path is baked into it — the League install is looked up from Riot's own
+`RiotClientInstalls.json`, so another drive works with no edits, and the account, region
+and platform all come from whichever client is running. They get the update button too.
 
-**Send only the `.exe`.** Do not zip the project folder: `data/` holds your match history,
-including other players' puuids and Riot IDs. It is gitignored, so sharing via git is
-safe, but a zip of the folder is not.
+**Never send the project folder.** Your match history is not in the repo — it lives in
+`%LOCALAPPDATA%\LoLcal History` and holds other players' puuids and Riot IDs — but a zip
+of a working checkout can pick up a stray `data/` folder from an older build. The link,
+or the `.exe` on its own, is always safe.
 
 What to warn them about:
 
@@ -222,13 +274,13 @@ easiest thing in the world to trust wrongly. This one had exactly that bug durin
 development: every capture threw, it caught the error, reconnected, and went on printing
 "waiting for games to finish" while recording nothing for a whole session.
 
-So its state is persisted to `data/health.json` and surfaced in two places:
+So its state is persisted to `health.json` in the data folder and surfaced in two places:
 
 - **`lolhist doctor`** prints capture counts, the last game caught, and any error — and
   **exits non-zero when the watcher is failing**, so it can be used as an alarm rather
   than something you have to read.
 - **The dashboard** shows a red banner when captures are failing, naming the error, plus
-  a always-visible one-line status under the summary cards.
+  an always-visible one-line status under the summary cards.
 
 A game that ends with no stats block available is reported separately as *missed*, not
 failed, and does not raise the alarm — the history sweep still picks it up, and a warning
@@ -238,11 +290,13 @@ that cries wolf is a warning you learn to ignore.
 
 ```
 League Client ──lockfile──> connection ──┬── WebSocket ──> watcher  ──┐
-                                         └── REST      ──> backfill ──┤
-                                                                       v
-                                         data/raw/*.json.gz  <──── normalize ──> SQLite
-                                                                                    │
-                                                              Flask dashboard <─────┘
+                                         ├── REST      ──> backfill ──┤
+                                         │                             v
+                                         │    raw/*.json.gz <── normalize ──> SQLite
+                                         │                                       │
+                                         └── assets ──> static/icons/ ──┐        │
+                                                                        v        v
+                                                                   Flask dashboard
 ```
 
 **Two capture paths.** The watcher listens for end-of-game and grabs the full stats
@@ -259,10 +313,19 @@ source replaces the participants, but match metadata is merged field by field, a
 weaker source is still allowed to fill in blanks. That is why a Mayhem game captured live
 still ends up labelled "ARAM: Mayhem" rather than "KIWI".
 
-**Raw payloads are archived.** Every capture is gzipped to `data/raw/` before it is
-parsed. The LCU is unsupported and its payload shapes drift between patches; keeping the
-raw JSON means a shape change costs a re-parse of files you already have, never lost
-history.
+**Raw payloads are archived.** Every capture is gzipped to `raw/` before it is parsed.
+The LCU is unsupported and its payload shapes drift between patches; keeping the raw JSON
+means a shape change costs a re-parse of files you already have, never lost history.
+
+That has already earned its keep once for a reason it was not designed for: a database
+corrupted beyond what SQLite's own `.recover` could rebuild — the table definitions were
+gone — was restored in full by replaying the archive through the same normaliser that
+wrote it the first time. Every match, participant and augment came back.
+
+**Icons come from the client too.** Champion portraits, item icons, summoner spells and
+your profile picture are copied out of the client's own assets into `static/icons/` the
+first time they are referenced, then served from disk. So the dashboard renders with
+League closed, and no image request ever leaves the machine.
 
 **IDs are the source of truth.** Names are a display convenience resolved from the
 client's assets. An augment the client doesn't recognise still gets stored, as
