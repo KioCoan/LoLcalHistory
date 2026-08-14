@@ -59,6 +59,17 @@ _INDEPENDENT = _NO_WINDOW | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 # crash this whole arrangement exists to prevent.
 QUIT_WAIT_SECONDS = 90
 
+# Long enough for an on-access scanner to finish with the newly written
+# executable before a one-file build tries to unpack itself out of it.
+RELAUNCH_DELAY_SECONDS = 8
+
+# Where the installer puts it. `PrivilegesRequired=lowest` and a fixed
+# `DefaultDirName` in the .iss make this the same on every machine.
+RELAUNCH_TARGET = (
+    Path(os.environ.get("LOCALAPPDATA") or Path.home())
+    / "Programs" / config.APP_NAME / f"{config.APP_NAME}.exe"
+)
+
 # Set by the desktop app so the updater can close the window before the
 # installer tries to replace the executable underneath it. Absent when running
 # `lolhist serve`, in which case the user is told to close the app themselves.
@@ -361,6 +372,7 @@ def _launch(installer: Path) -> None:
     installer_literal = str(installer).replace("'", "''")
     process_name = config.APP_NAME.replace("'", "''")
 
+    relaunch = str(RELAUNCH_TARGET).replace("'", "''")
     script = (
         # Both processes, not just this one: the bootloader is the one holding
         # the unpacked directory, and it outlives the child.
@@ -369,7 +381,18 @@ def _launch(installer: Path) -> None:
         f"-and (Get-Date) -lt $deadline) {{ Start-Sleep -Milliseconds 250 }}; "
         # A breath for the bootloader to finish removing its temp directory.
         "Start-Sleep -Milliseconds 800; "
-        f"Start-Process -FilePath '{installer_literal}' -ArgumentList {arguments}"
+        f"$s = Start-Process -FilePath '{installer_literal}' -ArgumentList {arguments} "
+        "-PassThru; "
+        "try { $s.WaitForExit() } catch {}; "
+        # The installer has just written a 27 MB executable, and a one-file
+        # build unpacks itself the instant it starts. Launching into that races
+        # the on-access virus scanner still holding the new file, and the unpack
+        # fails with "Failed to load Python DLL ...\\_MEIxxxxx\\python3xx.dll" —
+        # which is why the app came back only when started again by hand. So the
+        # relaunch waits here rather than in the installer's own Run section,
+        # where there is no way to pause.
+        f"Start-Sleep -Seconds {RELAUNCH_DELAY_SECONDS}; "
+        f"if (Test-Path '{relaunch}') {{ Start-Process -FilePath '{relaunch}' }}"
     )
 
     subprocess.Popen(

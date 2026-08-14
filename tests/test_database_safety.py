@@ -213,3 +213,61 @@ def _count(path) -> int:
         return conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
     finally:
         conn.close()
+
+
+class TestSharedConnectionDiscipline:
+    """Everything touching the watcher's connection must serialise on the lock.
+
+    The corruption this guards against was real and repeated. `icons.sync` ran
+    on a worker thread and read the shared connection unlocked while a capture
+    wrote through it on another. SQLite's own check named the result exactly:
+
+        Tree 9 page 9 cell 0: 2nd reference to page 93
+        wrong # of entries in index sqlite_autoindex_participants_1
+
+    Two b-trees claiming the same pages — an allocator driven by two threads
+    that could not see each other.
+    """
+
+    def test_the_icon_mirror_reads_under_the_lock(self, tmp_path, monkeypatch):
+        from lolhist import icons
+
+        db = tmp_path / "history.db"
+        populate(db, count=2, reopen=False)
+        conn = store.open_db(db)
+
+        taken = []
+        real = store.lock
+
+        def watched():
+            taken.append(True)
+            return real()
+
+        monkeypatch.setattr(store, "lock", watched)
+        try:
+            icons.referenced(conn)
+        finally:
+            conn.close()
+
+        assert taken, "icons.referenced read the shared connection unlocked"
+
+    def test_no_module_touches_a_shared_connection_unlocked(self):
+        """A cheap scan, because the next one of these will be added by hand.
+
+        Only modules handed the watcher's connection are checked. The web app
+        opens its own per-request connections and the CLI is single-threaded,
+        so neither shares one.
+        """
+        import re
+        from pathlib import Path
+
+        package = Path(store.__file__).parent
+        offenders = []
+        for name in ("icons.py", "backfill.py", "watcher.py"):
+            source = (package / name).read_text(encoding="utf-8")
+            for number, line in enumerate(source.splitlines(), 1):
+                if re.search(r"\bconn\.execute\(", line):
+                    window = "\n".join(source.splitlines()[max(0, number - 12):number])
+                    if "store.lock()" not in window and "_DB_LOCK" not in window:
+                        offenders.append(f"{name}:{number}")
+        assert not offenders, f"unlocked use of a shared connection: {offenders}"

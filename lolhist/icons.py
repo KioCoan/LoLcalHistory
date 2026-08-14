@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 
-from . import config, static_data
+from . import config, static_data, store
 from .client import LcuClient
 
 log = logging.getLogger(__name__)
@@ -77,13 +77,18 @@ def referenced(conn: sqlite3.Connection) -> dict[str, set[int]]:
     }
 
     wanted: dict[str, set[int]] = {}
-    for kind, sql in queries.items():
-        try:
-            wanted[kind] = {row[0] for row in conn.execute(sql) if row[0]}
-        except sqlite3.Error as exc:
-            # A column added by a later migration may not exist on an old file.
-            log.debug("cannot list %s icons: %s", kind, exc)
-            wanted[kind] = set()
+    # Under the store's lock. This runs on a worker thread against the same
+    # connection the watcher writes captures through, and reading it unlocked
+    # while a capture was in flight corrupted the database — two b-trees
+    # claiming the same pages. Mirroring some art is never worth that.
+    with store.lock():
+        for kind, sql in queries.items():
+            try:
+                wanted[kind] = {row[0] for row in conn.execute(sql) if row[0]}
+            except sqlite3.Error as exc:
+                # A column added by a later migration may be absent on an old file.
+                log.debug("cannot list %s icons: %s", kind, exc)
+                wanted[kind] = set()
     return wanted
 
 

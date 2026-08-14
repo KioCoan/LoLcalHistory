@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 import sys
 from datetime import datetime
 
@@ -303,7 +304,14 @@ def cmd_restore(args: argparse.Namespace) -> int:
         print("The backup does not pass its integrity check; refusing to restore from it.")
         return 1
 
+    # The copy happens first, into a temporary file beside the target. Moving
+    # the current database aside before securing the replacement means a failure
+    # anywhere in between leaves no database at all — which is exactly what
+    # happened the first time this ran.
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    staged = live.with_name(f"{live.stem}-restoring{live.suffix}")
+    shutil.copy2(backup, staged)
+
     if live.exists():
         aside = live.with_name(f"{live.stem}-replaced-{stamp}{live.suffix}")
         live.replace(aside)
@@ -313,7 +321,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
         if companion.exists():
             companion.unlink()
 
-    shutil.copy2(backup, live)
+    staged.replace(live)
     print(f"restored {held} matches from {backup.name}")
     print("Close the app first if it is running, then reopen it.")
     return 0

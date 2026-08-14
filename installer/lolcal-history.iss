@@ -97,9 +97,14 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
     Flags: deletevalue; Tasks: not startup
 
 [Run]
-; No `postinstall` and no `skipifsilent`, on purpose: this runs after a silent
-; install too, which is how the update button gets the app back on screen.
-Filename: "{app}\{#AppExe}"; Description: "Open {#AppName}"; Flags: nowait
+; `skipifsilent` on purpose. A silent install is an in-app update, and starting
+; the app from here launches it the instant the new 27 MB executable is written
+; — racing the on-access virus scanner still holding that file. A one-file build
+; unpacks itself at startup, so it loses that race and dies with
+; "Failed to load Python DLL ...\_MEIxxxxx\python3xx.dll". The updater relaunches
+; it a few seconds later instead, where there is somewhere to pause.
+; An interactive install still offers to open it, as anyone would expect.
+Filename: "{app}\{#AppExe}"; Description: "Open {#AppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 ; Leaves %LOCALAPPDATA%\LoLcal History alone — that is the match history, and

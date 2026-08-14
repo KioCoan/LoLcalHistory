@@ -377,20 +377,42 @@ class TestReleasePipeline:
         assert "PrivilegesRequired=lowest" in text
         assert "{localappdata}\\Programs" in text
 
-    def test_the_installer_relaunches_after_a_silent_install(self):
-        """Without this the update button would leave the app closed."""
-        section = ISS.read_text(encoding="utf-8").split("\n[Run]\n")[1]
-        # Directives only — a `;` comment explaining the flags is not one.
-        directives = [
-            line for line in section.splitlines()
-            if line.strip().startswith("Filename:")
-        ]
+    def test_a_silent_install_does_not_relaunch_the_app_itself(self):
+        """Reversed deliberately, after it caused the failure it was meant to
+        prevent.
 
-        assert directives, "nothing runs after the install"
-        assert all("skipifsilent" not in line for line in directives), (
-            "a silent install would not relaunch the app"
+        Setup starts the app the instant it has written a 27 MB executable. A
+        one-file build unpacks itself at startup, so it races the on-access
+        virus scanner still holding that new file and loses:
+
+            Failed to load Python DLL '...\\_MEIxxxxx\\python3xx.dll'
+
+        The updater's own waiter relaunches it a few seconds later instead,
+        which is somewhere a pause can actually live.
+        """
+        section = ISS.read_text(encoding="utf-8").split("\n[Run]\n")[1]
+        directives = [
+            line for line in section.splitlines() if line.strip().startswith("Filename:")
+        ]
+        assert directives, "an interactive install should still offer to open it"
+        assert all("skipifsilent" in line for line in directives), (
+            "a silent install would launch the app into the scanner's lock"
         )
-        assert any("nowait" in line for line in directives)
+
+    def test_the_updater_relaunches_the_app_after_a_pause(self, monkeypatch):
+        """Since Setup no longer does it, this is the only thing that will."""
+        spawned = {}
+        monkeypatch.setattr(
+            updates.subprocess, "Popen", lambda argv, **kw: spawned.update(argv=argv)
+        )
+        updates._launch(Path(r"C:\x\Setup.exe"))
+        script = spawned["argv"][-1]
+
+        assert "WaitForExit" in script, "it would relaunch before the install finished"
+        assert f"Start-Sleep -Seconds {updates.RELAUNCH_DELAY_SECONDS}" in script
+        assert str(updates.RELAUNCH_TARGET) in script
+        # Order matters: install, settle, then start.
+        assert script.index("WaitForExit") < script.index("Start-Sleep -Seconds")
 
     def test_the_asset_name_the_updater_looks_for_is_the_one_built(self):
         """The updater matches assets ending in `setup.exe`; the workflow has to

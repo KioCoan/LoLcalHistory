@@ -12,6 +12,7 @@ import json
 import logging
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -29,6 +30,23 @@ SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 # opened thread-agnostic and every statement is serialized through this lock
 # instead. Re-entrant because upserts call into the helpers below.
 _DB_LOCK = threading.RLock()
+
+
+@contextmanager
+def lock():
+    """Serialise use of a shared connection.
+
+    Everything in this module already takes it. Anything *outside* this module
+    that touches the watcher's connection must take it too, and one place did
+    not — the icon mirror read from it on a worker thread while a capture was
+    writing on another. Two threads on one connection with no ordering between
+    them is how a database ends up with two b-trees claiming the same page:
+
+        Tree 9 page 9 cell 0: 2nd reference to page 93
+        wrong # of entries in index sqlite_autoindex_participants_1
+    """
+    with _DB_LOCK:
+        yield
 
 
 def _now() -> str:
