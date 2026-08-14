@@ -289,46 +289,99 @@ def create_app(on_show=None) -> Flask:
                     )
                 ]
 
-                # Classic games are ranked on their own ladder, so the rank
-                # shown has to follow the mode rather than always being solo Q.
+                # Classic games are ranked on their own ladder, so the rank read
+                # against a match follows the mode rather than always being solo
+                # queue. `ladder` is narrower: the ladder this game actually
+                # moved, which for ARAM is none at all.
                 queue_type = ranked.ranked_queue_for(match["queue_id"], match["game_mode"])
                 match["rank_queue_type"] = queue_type
-                match["team"] = _team_with_ranks(conn, match, queue_type)
+                match["ladder"] = ranked.affects_ladder(
+                    match["queue_id"], match["game_mode"]
+                )
+                match["team"] = _team_with_ranks(conn, match, queue_type, match["ladder"])
                 match["my_rank"] = next(
                     (p for p in match["team"] if p["puuid"] in mine and p["tier"]), None
                 )
             return jsonify(matches)
 
-    def _team_with_ranks(conn, match, queue_type):
-        """Team list with each player's rank on the ladder this mode uses.
+    def _team_with_ranks(conn, match, queue_type, ladder):
+        """Team list with every ladder each player is ranked on.
 
-        Prefers the rank captured with the game; falls back to the player's
-        current rank, flagged so the two are never confused — a backfilled game
-        can only ever show what someone is ranked today.
+        All of them, not just the one this mode is read against: someone's solo
+        queue rank says something about them in a Classic game too, and which
+        ladder a reader cares about is not ours to decide. Ladders they are
+        unranked on are left out entirely rather than listed as blanks.
+
+        Per ladder, the rank captured with the game wins over the player's
+        current rank, and the fallback is flagged so the two are never confused
+        — a backfilled game can only ever show what someone is ranked today. The
+        choice is made per ladder rather than per player because a capture may
+        hold solo queue and nothing else, and falling back for the rest beats
+        showing that player a single ladder.
         """
-        return _rows(
+        key = (match["game_id"], match["platform_id"])
+        players = _rows(
             conn,
             """
             SELECT p.participant_id, p.puuid, p.champion_id, p.champion_name,
                    p.riot_id_game_name, p.riot_id_tagline, p.summoner_name,
                    p.kills, p.deaths, p.assists, p.team_id, p.win,
                    p.spell1_id, p.spell2_id,
-                   p.item0, p.item1, p.item2, p.item3, p.item4, p.item5, p.item6,
-                   COALESCE(pr.tier, plr.tier)                   AS tier,
-                   COALESCE(pr.division, plr.division)           AS division,
-                   COALESCE(pr.league_points, plr.league_points) AS league_points,
-                   CASE WHEN pr.tier IS NOT NULL THEN 1 ELSE 0 END AS rank_at_match
+                   p.item0, p.item1, p.item2, p.item3, p.item4, p.item5, p.item6
             FROM participants p
-            LEFT JOIN participant_ranks pr
-              ON  pr.game_id = p.game_id AND pr.platform_id = p.platform_id
-              AND pr.participant_id = p.participant_id AND pr.queue_type = ?
-            LEFT JOIN player_ranks plr
-              ON  plr.puuid = p.puuid AND plr.queue_type = ?
             WHERE p.game_id = ? AND p.platform_id = ?
             ORDER BY p.team_id, p.participant_id
             """,
-            (queue_type, queue_type, match["game_id"], match["platform_id"]),
+            key,
         )
+
+        # Current ranks first, so the at-the-time snapshots below overwrite them.
+        found: dict[tuple[int, str], dict] = {}
+        for row in conn.execute(
+            """
+            SELECT p.participant_id, plr.queue_type, plr.tier, plr.division,
+                   plr.league_points, 0 AS rank_at_match
+            FROM participants p
+            JOIN player_ranks plr ON plr.puuid = p.puuid
+            WHERE p.game_id = ? AND p.platform_id = ?
+            """,
+            key,
+        ):
+            found[(row["participant_id"], row["queue_type"])] = dict(row)
+        for row in conn.execute(
+            """
+            SELECT participant_id, queue_type, tier, division, league_points,
+                   1 AS rank_at_match
+            FROM participant_ranks
+            WHERE game_id = ? AND platform_id = ?
+            """,
+            key,
+        ):
+            found[(row["participant_id"], row["queue_type"])] = dict(row)
+
+        for player in players:
+            ranks = []
+            for tracked in ranked.TRACKED_QUEUES:
+                rank = found.get((player["participant_id"], tracked))
+                if rank is None or not rank["tier"]:
+                    continue
+                ranks.append(
+                    {
+                        **rank,
+                        "queue_label": ranked.QUEUE_INITIALS.get(tracked, tracked[:1]),
+                        "queue_title": ranked.QUEUE_LABELS.get(tracked, tracked),
+                        "is_game_ladder": tracked == ladder,
+                    }
+                )
+            player["ranks"] = ranks
+            # The ladder this mode is read against, kept flat because the Rank
+            # column of the table shows one rank and needs to know which.
+            primary = next((r for r in ranks if r["queue_type"] == queue_type), None)
+            player["tier"] = primary["tier"] if primary else None
+            player["division"] = primary["division"] if primary else None
+            player["league_points"] = primary["league_points"] if primary else None
+            player["rank_at_match"] = primary["rank_at_match"] if primary else 0
+        return players
 
     @app.route("/api/champions")
     def api_champions():
@@ -409,6 +462,8 @@ def create_app(on_show=None) -> Flask:
                            pl.riot_id_tagline AS tagline,
                            solo.tier        AS solo_tier,
                            solo.division    AS solo_division,
+                           flex.tier        AS flex_tier,
+                           flex.division    AS flex_division,
                            classic.tier     AS classic_tier,
                            classic.division AS classic_division,
                            COUNT(*) AS games,
@@ -423,6 +478,8 @@ def create_app(on_show=None) -> Flask:
                     LEFT JOIN players pl ON pl.puuid = t.puuid
                     LEFT JOIN player_ranks solo
                       ON solo.puuid = t.puuid AND solo.queue_type = 'RANKED_SOLO_5x5'
+                    LEFT JOIN player_ranks flex
+                      ON flex.puuid = t.puuid AND flex.queue_type = 'RANKED_FLEX_SR'
                     LEFT JOIN player_ranks classic
                       ON classic.puuid = t.puuid AND classic.queue_type = 'JADE_RANKED_SOLO_5x5'
                     {where}

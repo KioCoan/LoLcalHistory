@@ -39,7 +39,15 @@ CLASSIC_QUEUE_IDS = {4310, 4320}
 CLASSIC_GAME_MODES = {"JADE"}
 
 # The ladders worth storing. Others exist (TFT variants) but are noise here.
+# Ordered as they are shown: solo queue is what most people mean by "rank".
 TRACKED_QUEUES = (SOLO, FLEX, CLASSIC)
+
+QUEUE_LABELS = {SOLO: "Solo/Duo", FLEX: "Flex", CLASSIC: "Classic"}
+
+# One letter each. A team list puts ten players against three ladders apiece, so
+# the names alone cost more width than the ranks they label; the full name goes
+# in the tooltip.
+QUEUE_INITIALS = {SOLO: "S", FLEX: "F", CLASSIC: "C"}
 
 TIER_LABELS = {
     "": None,

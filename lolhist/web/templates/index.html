@@ -46,9 +46,52 @@
   .build .trinket { margin-left: 5px; }
   .spells { display: inline-flex; flex-direction: column; gap: 2px; margin-right: 5px; }
   .spells img { width: 15px; height: 15px; border-radius: 3px; }
-  .teams li { display: flex; align-items: center; gap: 7px; }
+  .teams li { display: flex; align-items: flex-start; gap: 7px; }
   .teams .champ { width: 22px; height: 22px; }
-  .who { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .who { flex: 1 1 auto; min-width: 0; }
+  /* The name line stays on one line and truncates; the ladders below it wrap. */
+  .who .line { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Every ladder a player is ranked on, side by side. */
+  .ranks { display: flex; flex-wrap: wrap; gap: 1px 11px; margin-top: 1px; }
+  .rk { white-space: nowrap; font-size: 11px; }
+  .rk em, .rk .pts { font-style: normal; color: var(--muted); }
+  /* The ladder this game actually moved. Nothing is marked in a mode that
+     moves none, which is most of them. */
+  .rk.here em { color: var(--text); font-weight: 600; }
+  .norank { color: var(--muted); font-size: 11px; }
+
+  /* Ladder colours. Spelled out per theme rather than shared: the bright tier
+     colours are unreadable on white, and the dark ones vanish on black. Classic
+     runs its own ladder with its own bottom tiers (Salt, Wood), so they are
+     here too. Anything unrecognised falls through to ordinary text. */
+  .r { font-weight: 600; }
+  .r-salt        { color: #9fb3c0; }
+  .r-wood        { color: #b08155; }
+  .r-iron        { color: #9a938e; }
+  .r-bronze      { color: #c88b52; }
+  .r-silver      { color: #a9b6be; }
+  .r-gold        { color: #e0b437; }
+  .r-platinum    { color: #4fc0ad; }
+  .r-emerald     { color: #45c07a; }
+  .r-diamond     { color: #6ba4f5; }
+  .r-master      { color: #b473e6; }
+  .r-grandmaster { color: #e6696d; }
+  .r-challenger  { color: #46cfe6; }
+  @media (prefers-color-scheme: light) {
+    .r-salt        { color: #506874; }
+    .r-wood        { color: #85603a; }
+    .r-iron        { color: #6f6763; }
+    .r-bronze      { color: #97612f; }
+    .r-silver      { color: #5c6a72; }
+    .r-gold        { color: #7f6000; }
+    .r-platinum    { color: #16786a; }
+    .r-emerald     { color: #1b7a44; }
+    .r-diamond     { color: #2e63c0; }
+    .r-master      { color: #7a35b5; }
+    .r-grandmaster { color: #b32529; }
+    .r-challenger  { color: #15768a; }
+  }
 
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 20px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
@@ -212,13 +255,60 @@ function rankText(p) {
   return titleCase(p.tier) + div;
 }
 
-function rankCell(p) {
+// Ordered low to high. Classic invents its own bottom tiers, so both sets are
+// here; this mirrors ranked._TIER_ORDER.
+const TIER_ORDER = ["SALT", "WOOD", "IRON", "BRONZE", "SILVER", "GOLD", "PLATINUM",
+                    "EMERALD", "DIAMOND", "MASTER", "GRANDMASTER", "CHALLENGER"];
+const DIVISION_ORDER = { IV: 0, III: 1, II: 2, I: 3 };
+const LADDERS = [["solo", "Solo/Duo"], ["flex", "Flex"], ["classic", "Classic"]];
+
+// One comparable number for a rank, so a column of them sorts by strength.
+// Unranked goes below everyone rather than sharing a bucket with Salt IV.
+function ladderPosition(tier, division) {
+  const index = TIER_ORDER.indexOf(String(tier || "").toUpperCase());
+  if (index < 0) return -1;
+  return index * 10 + (DIVISION_ORDER[String(division || "").toUpperCase()] || 0);
+}
+
+// Tier colours live in CSS classes, not inline styles, so the light and dark
+// themes can each pick their own. The guard is because the class name is built
+// from a database value.
+function tierClass(tier) {
+  const t = String(tier || "").toLowerCase();
+  return /^[a-z]+$/.test(t) ? `r r-${t}` : "r";
+}
+
+// The rank itself, in its ladder's colour. Empty string when unranked, so
+// callers can decide what an absent rank should read as.
+function rankSpan(p) {
   const text = rankText(p);
-  if (!text) return '<span class="muted">Unranked</span>';
+  if (!text) return "";
   // An asterisk means the rank is current, not what they held at the time.
   const approx = p.rank_at_match ? "" : "*";
-  const lp = p.league_points != null ? ` ${p.league_points} LP` : "";
-  return `${esc(text)}${approx}<span class="lp">${lp}</span>`;
+  return `<span class="${tierClass(p.tier)}">${esc(text)}${approx}</span>`;
+}
+
+function rankCell(p) {
+  const span = rankSpan(p);
+  if (!span) return '<span class="muted">Unranked</span>';
+  const lp = p && p.league_points != null ? ` ${p.league_points} LP` : "";
+  return `${span}<span class="lp">${lp}</span>`;
+}
+
+// Every ladder a player is ranked on. Ladders they are unranked on are left
+// out — three "Unranked" entries per player would say nothing and crowd out
+// the ones that do.
+function rankLadders(p) {
+  const list = p.ranks || [];
+  if (!list.length) return '<span class="norank">Unranked</span>';
+  return '<span class="ranks">' + list.map(r => {
+    const pts = r.league_points != null ? `<span class="pts"> ${Number(r.league_points)} LP</span>` : "";
+    // The initial is all that fits; the tooltip carries the name it stands for.
+    const title = esc(r.queue_title) +
+      (r.is_game_ladder ? " — the ladder this game counted for" : "");
+    return `<span class="rk${r.is_game_ladder ? " here" : ""}" title="${title}">` +
+           `<em>${esc(r.queue_label)}</em> ${rankSpan(r)}${pts}</span>`;
+  }).join("") + "</span>";
 }
 
 // Item and spell names, for the build tooltips. Loaded once — they only move on
@@ -336,10 +426,14 @@ const COLS = {
   teammates: [
     { key: "name", label: "Player", render: r =>
         esc(r.name) + (r.tagline ? `<span class="tag">#${esc(r.tagline)}</span>` : "") },
-    { key: "solo_rank", label: "Solo/Duo", render: r =>
-        rankText({ tier: r.solo_tier, division: r.solo_division }) || '<span class="muted">—</span>' },
-    { key: "classic_rank", label: "Classic", render: r =>
-        rankText({ tier: r.classic_tier, division: r.classic_division }) || '<span class="muted">—</span>' },
+    // Sorted on the numeric ladder position rather than the tier text, which
+    // would put Bronze above Diamond. No asterisk on this tab: these are
+    // current ranks and nothing here claims otherwise.
+    ...LADDERS.map(([q, label]) => ({
+      key: q + "_rank", label, render: r =>
+        rankSpan({ tier: r[q + "_tier"], division: r[q + "_division"], rank_at_match: 1 })
+          || '<span class="muted">—</span>',
+    })),
     { key: "games", label: "Games", num: true },
     { key: "wins", label: "W", num: true },
     { key: "losses", label: "L", num: true },
@@ -352,30 +446,26 @@ const COLS = {
 function playerLine(p) {
   const tag = p.riot_id_tagline ? `<span class="tag">#${esc(p.riot_id_tagline)}</span>` : "";
   const name = esc(p.riot_id_game_name || p.summoner_name || "?");
-  const rank = rankText(p);
-  const badge = rank
-    ? `<span class="pill"${p.rank_at_match ? "" : ' title="Current rank — this game predates rank capture"'}>` +
-      `${esc(rank)}${p.rank_at_match ? "" : "*"}${p.league_points != null ? " · " + p.league_points + " LP" : ""}</span>`
-    : "";
   return `<li>${icon("champion", p.champion_id, "champ", p.champion_name)}
-    <span class="who"><b>${esc(p.champion_name || "?")}</b> — ${name}${tag}
-    · ${p.kills}/${p.deaths}/${p.assists} ${badge}</span>
+    <span class="who">
+      <span class="line"><b>${esc(p.champion_name || "?")}</b> — ${name}${tag}
+        · ${p.kills}/${p.deaths}/${p.assists}</span>
+      ${rankLadders(p)}
+    </span>
     ${buildCell(p)}</li>`;
 }
 
 function matchDetail(r, key) {
   const side = (id) => (r.team || []).filter(p => p.team_id === id).map(playerLine).join("");
   const augs = (r.augments || []).filter(Boolean);
-  const ladder = r.rank_queue_type === "JADE_RANKED_SOLO_5x5" ? "Classic ladder" : "Solo/Duo";
-  const anyApprox = (r.team || []).some(p => p.tier && !p.rank_at_match);
+  const anyApprox = (r.team || []).some(p => (p.ranks || []).some(x => !x.rank_at_match));
   return `<tr class="detail" data-detail="${esc(key)}" hidden><td colspan="12">
     ${augs.length ? `<div class="augs"><b>Augments:</b> ${augs.map(a => `<span class="pill">${esc(a)}</span>`).join(" ")}</div>` : ""}
-    <div class="muted" style="margin-top:8px">Ranks shown for: <b>${ladder}</b></div>
     <div class="teams" style="margin-top:6px">
       <div><b>Team 100</b><ul>${side(100)}</ul></div>
       <div><b>Team 200</b><ul>${side(200)}</ul></div>
     </div>
-    ${anyApprox ? '<div class="muted" style="margin-top:8px">* current rank — this game was imported from history, which cannot say what anyone was ranked at the time.</div>' : ""}
+    ${anyApprox ? '<div class="muted" style="margin-top:8px">* current rank — this game predates rank capture, and nothing can say now what someone was ranked at the time.</div>' : ""}
     </td></tr>`;
 }
 
@@ -414,7 +504,11 @@ async function render({ silent = false } = {}) {
       empty: "No augments recorded yet — play an ARAM: Mayhem game.",
     });
   } else if (current === "teammates") {
-    const rows = await api("teammates?min_games=2");
+    const rows = (await api("teammates?min_games=2")).map(r => ({
+      ...r,
+      ...Object.fromEntries(LADDERS.map(([q]) =>
+        [q + "_rank", ladderPosition(r[q + "_tier"], r[q + "_division"])])),
+    }));
     view.innerHTML = table(COLS.teammates, rows, { empty: "Nobody seen twice yet." });
   } else {
     const rows = await api("champions");
