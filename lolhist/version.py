@@ -10,7 +10,7 @@ Bump this, commit, then tag `v<the same number>`.
 
 from __future__ import annotations
 
-__version__ = "0.1.4"
+__version__ = "0.1.6"
 
 # GitHub repository the update check asks about. Only ever used to build the
 # releases URL — nothing about your history is sent anywhere.
