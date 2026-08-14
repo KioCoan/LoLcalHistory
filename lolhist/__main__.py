@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import pathlib
 import shutil
+import sqlite3
 import sys
 from datetime import datetime
 
@@ -283,6 +286,165 @@ def cmd_gui(args: argparse.Namespace) -> int:
     return run_desktop(with_watcher=not args.no_watcher, port=args.port)
 
 
+# What a replay of the archive cannot produce. Match payloads carry the games;
+# these carry who the players are and what they were ranked, which comes from
+# separate client calls that can never be repeated for a game already played.
+# Dropping them is why a rebuilt history showed every player as unranked.
+_CARRIED_TABLES = ("me", "players", "player_ranks", "participant_ranks", "rank_progress")
+
+
+def _carry_forward(conn, *sources) -> dict[str, int]:
+    """Copy the un-reconstructible tables out of older databases.
+
+    Reads every source given, newest intention first, and never lets one
+    unreadable file stop the rest — a damaged database usually still has most
+    of its tables, and those rows are the only copy in existence.
+    """
+    carried = {table: 0 for table in _CARRIED_TABLES}
+    for source in sources:
+        if not source:
+            continue
+        source = pathlib.Path(source)
+        if not source.exists():
+            continue
+        try:
+            previous = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+        except sqlite3.Error:
+            continue
+        previous.row_factory = sqlite3.Row
+        try:
+            for table in _CARRIED_TABLES:
+                try:
+                    rows = previous.execute(f"SELECT * FROM {table}").fetchall()
+                except sqlite3.Error:
+                    continue  # missing or damaged; the others may still be fine
+                for row in rows:
+                    columns = row.keys()
+                    placeholders = ",".join("?" * len(columns))
+                    try:
+                        with store.lock():
+                            conn.execute(
+                                f"INSERT OR IGNORE INTO {table} "
+                                f"({','.join(columns)}) VALUES ({placeholders})",
+                                tuple(row),
+                            )
+                        carried[table] += 1
+                    except sqlite3.Error:
+                        pass
+        finally:
+            previous.close()
+    with store.lock():
+        conn.commit()
+    return carried
+
+
+def cmd_rebuild(args: argparse.Namespace) -> int:
+    """Reconstruct the database from the raw archive.
+
+    The last resort, and the reason every payload is kept. Replays each
+    archived capture through the same normaliser that wrote it the first time,
+    then puts the archived rank and LP readings back on top.
+    """
+    import gzip
+
+    from .normalize import normalize
+
+    live = config.DB_PATH
+    staged = live.with_name(f"{live.stem}-rebuilding{live.suffix}")
+    staged.unlink(missing_ok=True)
+
+    if (config.DATA_DIR / "instance.json").exists():
+        print("The app appears to be running, and it holds the database open.")
+        print("Quit it from the tray icon first, then run this again.")
+        return 1
+
+    files = sorted(config.RAW_DIR.glob("*.json.gz"))
+    payloads = [p for p in files if not p.name.endswith("-ranks.json.gz")]
+    if not payloads:
+        print(f"No archived payloads in {config.RAW_DIR}.")
+        return 1
+
+    # Some end-of-game payloads were archived before the platform was known and
+    # are named "unknown-...". They carry no platform of their own either, and
+    # the column cannot be null — so borrow the one every other file agrees on.
+    platforms = [p.name.split("-", 1)[0] for p in payloads]
+    known = [p for p in platforms if p != "unknown"]
+    fallback = max(set(known), key=known.count) if known else ""
+
+    conn = store.open_db(staged)
+    static = static_data.load()
+    print(f"replaying {len(payloads)} archived payloads ({static.summary()})")
+
+    # History first, so end-of-game captures upsert over them exactly as they
+    # did live. The platform comes from the filename: an end-of-game payload
+    # carries none, and without it the row keys on ('', game_id) and sits
+    # beside its own history row instead of merging into it.
+    ok = failed = 0
+    for path in sorted(payloads, key=lambda p: ("-eog" in p.name, p.name)):
+        source = "eog" if "-eog" in path.name else "history"
+        platform = path.name.split("-", 1)[0]
+        try:
+            with gzip.open(path, "rt", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            match = normalize(payload, static, source=source,
+                              platform_hint=fallback if platform == "unknown" else platform)
+            if not match.game_id or not match.participants:
+                failed += 1
+                continue
+            match.raw_path = str(path.relative_to(config.DATA_DIR))
+            store.upsert_match(conn, match)
+            ok += 1
+        except Exception as exc:  # noqa: BLE001
+            print(f"  {path.name}: {exc}")
+            failed += 1
+
+    ranks = store.restore_ranks_from_archive(conn)
+
+    carried = _carry_forward(conn, live, args.carry_from)
+
+    # An end-of-game payload carries no queue id, and the live watcher fills
+    # that in from the client's gameflow session — which no archive holds. Left
+    # alone, those games show up as "KIWI" and "JADE".
+    with store.lock():
+        for mode, label in (("KIWI", "ARAM: Mayhem"), ("JADE", "Classic")):
+            conn.execute(
+                "UPDATE matches SET queue_name = ? "
+                "WHERE queue_name IS NULL AND game_mode = ?",
+                (label, mode),
+            )
+        conn.commit()
+
+    total = store.match_count(conn)
+    for table, n in sorted(carried.items()):
+        if n:
+            print(f"carried {n} {table} row(s) across")
+    print(f"replayed {ok}, skipped {failed}")
+    print(f"restored ranks for {ranks['participants']} players "
+          f"and LP for {ranks['matches']} games")
+    print(f"rebuilt {total} matches")
+    conn.close()
+
+    if not store.is_readable(staged):
+        print("The rebuilt database failed its integrity check; leaving it as "
+              f"{staged.name} and not replacing anything.")
+        return 1
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    if live.exists():
+        aside = live.with_name(f"{live.stem}-replaced-{stamp}{live.suffix}")
+        live.replace(aside)
+        print(f"kept the previous database as {aside.name}")
+    for suffix in ("-wal", "-shm"):
+        companion = live.with_name(live.name + suffix)
+        if companion.exists():
+            companion.unlink()
+    staged.replace(live)
+
+    print("\nDone. Reopen the app; sign in once so it knows which account is "
+          "yours, and it will fill in anything the archive could not.")
+    return 0
+
+
 def cmd_restore(args: argparse.Namespace) -> int:
     """Put the verified backup back, keeping the current file aside."""
     live = config.DB_PATH
@@ -430,6 +592,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_gui.add_argument("--port", type=int, default=None, help="fix the internal port")
     p_gui.set_defaults(func=cmd_gui)
+
+    p_rebuild = sub.add_parser(
+        "rebuild",
+        help="reconstruct the database from the raw archive (last resort)"
+    )
+    p_rebuild.add_argument(
+        "--carry-from", metavar="DB",
+        help="also copy players and ranks out of this older database"
+    )
+    p_rebuild.set_defaults(func=cmd_rebuild)
 
     p_restore = sub.add_parser(
         "restore", help="put the verified backup back after a loss"

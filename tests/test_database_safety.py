@@ -114,36 +114,53 @@ class TestQuarantine:
 
 
 class TestDurability:
-    """A captured game must survive losing the write-ahead log.
+    """A committed game must be in the database file, full stop.
 
-    This is the fault that emptied a history twice, and it never looked like a
-    fault: SQLite only folds the log back into the database after 1000 pages —
-    four megabytes — and a match costs a few kilobytes, so it never happened.
-    Weeks of games lived only in `history.db-wal`. Anything that invalidated
-    that file (a reboot, a replaced main file, a stale -shm) dropped the
-    database to its last checkpoint, which stayed perfectly *healthy* and
-    simply old. `quick_check` said ok, nothing was corrupt, and the games were
-    gone.
+    Two histories were lost to the write-ahead log. SQLite only folded it back
+    in after four megabytes, and a match costs a few kilobytes, so weeks of
+    games lived only in `history.db-wal`. Anything that invalidated that file —
+    a reboot, a replaced main file, a stale -shm — dropped the database to its
+    last checkpoint, which stayed perfectly *healthy* and simply old.
+    `quick_check` said ok, nothing was corrupt, and the games were gone.
+
+    The journal mode is now DELETE, so there is no such file to lose.
     """
 
-    def test_games_survive_the_log_being_thrown_away(self, tmp_path):
+    def test_there_is_no_write_ahead_log_to_lose(self, tmp_path):
+        db = tmp_path / "history.db"
+        conn = store.open_db(db)
+        try:
+            assert store.journal_mode(conn).lower() == "delete"
+        finally:
+            conn.close()
+
+    def test_games_are_in_the_database_file_itself(self, tmp_path):
         db = tmp_path / "history.db"
         populate(db, count=8, reopen=False)
 
-        for suffix in ("-wal", "-shm"):
+        # Anything the database is not allowed to depend on, removed.
+        for suffix in ("-wal", "-shm", "-journal"):
             companion = tmp_path / f"history.db{suffix}"
             if companion.exists():
                 companion.unlink()
 
-        assert _count(db) == 8, "the games only ever existed in the log"
+        assert _count(db) == 8
 
-    def test_the_log_does_not_grow_unchecked(self, tmp_path):
+    def test_an_existing_wal_database_is_converted(self, tmp_path):
+        """Everyone upgrading has one, and it must not stay that way."""
         db = tmp_path / "history.db"
-        populate(db, count=15, reopen=False)
-        wal = tmp_path / "history.db-wal"
-        size = wal.stat().st_size if wal.exists() else 0
+        legacy = sqlite3.connect(db)
+        legacy.execute("PRAGMA journal_mode = WAL")
+        legacy.execute("CREATE TABLE t (x)")
+        legacy.commit()
+        legacy.close()
 
-        assert size < 200_000, f"the log is {size} bytes; it is not being folded in"
+        conn = store.open_db(db)
+        try:
+            assert store.journal_mode(conn).lower() == "delete"
+        finally:
+            conn.close()
+        assert not (tmp_path / "history.db-wal").exists()
 
 
 class TestSnapshot:

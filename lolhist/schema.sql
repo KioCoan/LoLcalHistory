@@ -1,6 +1,12 @@
 -- Local match history. Personal data; never leaves this machine.
 
-PRAGMA journal_mode = WAL;
+-- Rollback journal, not write-ahead log. This script runs on every open, so it
+-- is the last word on the setting — `store.open_db` asking for DELETE was
+-- quietly overridden here until this line changed. See the note in open_db for
+-- why the mode matters: with WAL, a committed game can exist only in a second
+-- file, and losing that file loses the game with the database still reporting
+-- itself perfectly healthy.
+PRAGMA journal_mode = DELETE;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS matches (

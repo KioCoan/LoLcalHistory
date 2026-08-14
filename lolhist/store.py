@@ -212,16 +212,22 @@ def open_db(path: Path | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     with _DB_LOCK:
         conn.execute("PRAGMA foreign_keys = ON")
-        # A committed game must be in the database file, not parked in a log
-        # beside it. SQLite's default only folds the write-ahead log back in
-        # after 1000 pages — four megabytes — and this database writes a few
-        # kilobytes per match, so in practice it never happened: a month of
-        # games could sit entirely in the WAL. Anything that then invalidated
-        # that file (a reboot, a replaced main file, a stale -shm) dropped the
-        # database back to its last checkpoint, which stayed *healthy* and
-        # simply old. It reads as "my history vanished" with nothing broken
-        # anywhere to explain it.
-        conn.execute("PRAGMA wal_autocheckpoint = 32")   # ~128 KB
+        # A rollback journal, not a write-ahead log — a deliberate step back.
+        #
+        # WAL is the better mode when readers and writers overlap. This is one
+        # person writing a few kilobytes when a game ends, so it bought nothing
+        # and brought two extra files the database could not be read without.
+        # Every loss and every corruption in this project involved them: games
+        # that lived only in the log and vanished when it did; a database whose
+        # pages were claimed twice; a log truncated under a reader. Chasing each
+        # cause separately fixed three of them and the fourth came back anyway.
+        #
+        # In this mode a commit is in `history.db` when it returns. There is no
+        # log to lose, nothing to checkpoint, and no shared-memory file for a
+        # reboot or a virus scanner to leave stale. Writers block readers for a
+        # few milliseconds, which nothing here will ever notice.
+        conn.execute("PRAGMA journal_mode = DELETE")
+        conn.execute("PRAGMA synchronous = FULL")
         # Migrate before the schema script: it recreates the views, which would
         # fail if they reference columns the old tables do not have yet.
         _migrate(conn)
@@ -231,19 +237,9 @@ def open_db(path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
-def checkpoint(conn: sqlite3.Connection) -> bool:
-    """Fold the write-ahead log back into the database file.
-
-    Called after each captured game. The cost is a few milliseconds; the thing
-    it buys is that a finished game survives anything that happens to the log.
-    """
-    try:
-        with _DB_LOCK:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        return True
-    except sqlite3.Error:
-        log.debug("could not checkpoint the write-ahead log", exc_info=True)
-        return False
+def journal_mode(conn: sqlite3.Connection) -> str:
+    with _DB_LOCK:
+        return conn.execute("PRAGMA journal_mode").fetchone()[0]
 
 
 def backup_match_count(path: Path) -> int:
@@ -333,6 +329,115 @@ def archive_raw(payload: Any, game_id: int | str, platform_id: str, source: str)
     with gzip.open(target, "wt", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False)
     return str(target.relative_to(config.DATA_DIR))
+
+
+def _ranks_archive_path(match_key: tuple) -> Path:
+    game_id, platform_id = match_key
+    return config.RAW_DIR / f"{platform_id or 'unknown'}-{game_id}-ranks.json.gz"
+
+
+def archive_ranks(match_key: tuple, **fields: Any) -> None:
+    """Keep rank and LP readings beside the match payload they belong to.
+
+    The raw archive is what makes a rebuild lossless, and it was only ever half
+    an archive. Match payloads went in; the rank each player held and the LP a
+    game moved did not, because those come from separate calls made while the
+    game is still fresh — and unlike the match, they can never be asked for
+    again. So every rebuild silently dropped them, which is why the LP column
+    emptied each time the database had to be reconstructed.
+
+    Merged rather than overwritten: the rank going *in* is known at capture, the
+    change it produced only once the client has settled, sometimes a launch
+    later.
+    """
+    path = _ranks_archive_path(match_key)
+    existing: dict[str, Any] = {}
+    if path.exists():
+        try:
+            with gzip.open(path, "rt", encoding="utf-8") as handle:
+                existing = json.load(handle)
+        except (OSError, ValueError):
+            log.debug("unreadable rank archive at %s; rewriting", path)
+
+    for key, value in fields.items():
+        # One level deep, because `mine` is filled in twice: the rank going in
+        # at capture, the change it produced once the client has settled. A
+        # top-level update would let the second write erase the first.
+        if isinstance(value, dict) and isinstance(existing.get(key), dict):
+            existing[key] = {**existing[key], **value}
+        else:
+            existing[key] = value
+
+    try:
+        config.ensure_dirs()
+        with gzip.open(path, "wt", encoding="utf-8") as handle:
+            json.dump(existing, handle, ensure_ascii=False)
+    except OSError:
+        log.debug("could not archive ranks for %s", match_key, exc_info=True)
+
+
+def restore_ranks_from_archive(conn: sqlite3.Connection) -> dict[str, int]:
+    """Put archived rank and LP readings back into a rebuilt database."""
+    counts = {"participants": 0, "matches": 0}
+    if not config.RAW_DIR.exists():
+        return counts
+
+    with _DB_LOCK:
+        for path in sorted(config.RAW_DIR.glob("*-ranks.json.gz")):
+            try:
+                with gzip.open(path, "rt", encoding="utf-8") as handle:
+                    data = json.load(handle)
+            except (OSError, ValueError):
+                continue
+
+            key = (data.get("game_id"), data.get("platform_id") or "")
+            if key[0] is None:
+                continue
+
+            for row in data.get("participant_ranks") or []:
+                conn.execute(
+                    """
+                    INSERT INTO participant_ranks
+                        (game_id, platform_id, participant_id, queue_type,
+                         tier, division, league_points)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(game_id, platform_id, participant_id, queue_type)
+                    DO UPDATE SET tier = excluded.tier,
+                                  division = excluded.division,
+                                  league_points = excluded.league_points
+                    """,
+                    (key[0], key[1], *row),
+                )
+                counts["participants"] += 1
+
+            mine = data.get("mine")
+            if mine:
+                conn.execute(
+                    """
+                    UPDATE matches SET
+                        my_rank_queue      = COALESCE(?, my_rank_queue),
+                        my_lp_before       = COALESCE(?, my_lp_before),
+                        my_tier_before     = COALESCE(?, my_tier_before),
+                        my_division_before = COALESCE(?, my_division_before),
+                        my_lp_delta        = COALESCE(?, my_lp_delta),
+                        my_lp_after        = COALESCE(?, my_lp_after),
+                        my_tier_after      = COALESCE(?, my_tier_after),
+                        my_division_after  = COALESCE(?, my_division_after)
+                    WHERE game_id = ? AND platform_id = ?
+                    """,
+                    (
+                        mine.get("queue"),
+                        mine.get("lp_before"), mine.get("tier_before"),
+                        mine.get("division_before"),
+                        mine.get("delta"),
+                        mine.get("lp_after"), mine.get("tier_after"),
+                        mine.get("division_after"),
+                        key[0], key[1],
+                    ),
+                )
+                counts["matches"] += 1
+        conn.commit()
+    return counts
 
 
 def read_raw(relative_path: str) -> Any:
@@ -429,12 +534,7 @@ def upsert_match(conn: sqlite3.Connection, match: Match) -> str:
     permanently labelled "KIWI" with a null queue.
     """
     with _DB_LOCK:
-        outcome = _upsert_match_locked(conn, match)
-    # Committed is not the same as safe here. Until the write-ahead log is
-    # folded in, the game exists only in a file alongside the database, and
-    # anything that invalidates that file takes the game with it.
-    checkpoint(conn)
-    return outcome
+        return _upsert_match_locked(conn, match)
 
 
 def _upsert_match_locked(conn: sqlite3.Connection, match: Match) -> str:
@@ -525,6 +625,7 @@ def save_player_ranks(conn: sqlite3.Connection, ranks_by_puuid: dict) -> int:
                 )
                 written += 1
         conn.commit()
+
     return written
 
 
@@ -558,6 +659,25 @@ def save_participant_ranks(
                 )
                 written += 1
         conn.commit()
+
+    # The same rows into the archive. Unlike a match payload, nobody can ask
+    # the client later what a player was ranked during a game that has since
+    # aged out of its history — so if this is not kept now, a rebuild has
+    # nothing to put back, which is exactly why LP kept disappearing.
+    archived = [
+        (participant.participant_id, rank.queue_type, rank.tier, rank.division,
+         rank.league_points)
+        for participant in match.participants
+        for rank in (ranks_by_puuid.get(participant.puuid or "") or {}).values()
+        if rank.is_ranked
+    ]
+    if archived:
+        archive_ranks(
+            match.key,
+            game_id=match.key[0],
+            platform_id=match.key[1],
+            participant_ranks=archived,
+        )
     return written
 
 
@@ -635,6 +755,19 @@ def record_lp_change(
         )
         conn.commit()
 
+    archive_ranks(
+        match_key,
+        game_id=match_key[0],
+        platform_id=match_key[1],
+        mine={
+            "queue": queue_type,
+            "delta": delta,
+            "lp_after": after.league_points,
+            "tier_after": after.tier,
+            "division_after": after.division,
+        },
+    )
+
 
 def record_rank_before(
     conn: sqlite3.Connection, match_key: tuple, queue_type: str, before
@@ -662,6 +795,18 @@ def record_rank_before(
             ),
         )
         conn.commit()
+
+    archive_ranks(
+        match_key,
+        game_id=match_key[0],
+        platform_id=match_key[1],
+        mine={
+            "queue": queue_type,
+            "lp_before": before.league_points,
+            "tier_before": before.tier,
+            "division_before": before.division,
+        },
+    )
 
 
 def pending_lp_match(conn: sqlite3.Connection, puuid: str, max_age_hours: int = 6):
