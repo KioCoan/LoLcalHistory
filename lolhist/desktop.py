@@ -255,6 +255,43 @@ class Application:
             except Exception:
                 pass
 
+    def shutdown_for_update(self) -> None:
+        """Leave, without unwinding the window.
+
+        The updater calls this from a worker thread, and that is the whole
+        problem with doing it the obvious way. `destroy()` tears down the
+        webview's WinForms host, which lives in the CLR on the main thread;
+        driving that from another thread access-violates inside the interpreter
+        and the process dies with
+
+            Failed to load Python DLL '...\\_MEIxxxxx\\python3xx.dll'
+
+        — the one-file bootloader having already begun removing the directory
+        the crashing process was still running out of. That dialog looked like
+        an installer fault for two rounds of fixes. It was ours.
+
+        So everything that owns data is closed properly and the process is then
+        ended outright. Nothing is lost by skipping the GUI teardown: every
+        write is already committed, and the executable is about to be replaced.
+        """
+        self._quitting = True
+        try:
+            if self.watcher is not None:
+                self.watcher.stop()      # joins, then closes its connection
+            self.server.stop()
+            if self.tray is not None:
+                self.tray.stop()
+        except Exception:
+            log.exception("could not close cleanly before updating")
+        finally:
+            log.info("exiting for the installer")
+            logging.shutdown()
+            self._exit()
+
+    # Split out so a test can observe it without ending the test runner.
+    def _exit(self) -> None:
+        os._exit(0)
+
     def _open_in_browser(self) -> int:
         """Last resort when no webview is available.
 
@@ -307,7 +344,7 @@ class Application:
         # The installer cannot replace an executable that is running, so the
         # updater needs a way to close this window. Registered only here: under
         # `lolhist serve` there is no window and the user closes the app.
-        updates.set_quit_hook(self._quit)
+        updates.set_quit_hook(self.shutdown_for_update)
         updates.check_in_background()
 
         try:

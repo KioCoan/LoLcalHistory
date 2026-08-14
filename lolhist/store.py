@@ -120,14 +120,14 @@ def _readable(path: Path) -> bool:
     except sqlite3.Error:
         return False
     try:
-        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
-        # Reading the schema is not enough: a corrupt page can pass that and
-        # still fail the moment a real table is touched.
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' LIMIT 5"
-        ).fetchall():
-            conn.execute(f'SELECT COUNT(*) FROM "{row[0]}"').fetchone()
-        return True
+        # `quick_check` walks every page rather than trusting the schema. The
+        # first version of this only read sqlite_master and counted a few
+        # tables, and it passed a database that threw "disk image is malformed"
+        # on the very next query — a shallow check is worse than none, because
+        # it grants confidence it has not earned. The file is a few hundred
+        # kilobytes, so the whole walk costs milliseconds.
+        result = conn.execute("PRAGMA quick_check(20)").fetchone()
+        return bool(result) and result[0] == "ok"
     except sqlite3.DatabaseError:
         return False
     finally:
@@ -232,6 +232,19 @@ def snapshot(conn: sqlite3.Connection, source: Path) -> Path | None:
         with _DB_LOCK:
             live = conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
         if not live:
+            return None
+
+        # Verified before it is copied, not after. The first version of this
+        # skipped the check and dutifully preserved a database that was already
+        # corrupt — a backup nobody could restore from, which is worse than an
+        # obviously missing one because it is trusted.
+        with _DB_LOCK:
+            check = conn.execute("PRAGMA quick_check(20)").fetchone()
+        if not check or check[0] != "ok":
+            log.error(
+                "not backing up %s: it is already damaged (%s). The raw archive "
+                "can still rebuild the history.", source.name, check[0] if check else "?",
+            )
             return None
         if backup_path.exists() and _match_count(backup_path) > live:
             log.warning(

@@ -142,6 +142,27 @@ class TestSnapshot:
 
         assert _count(backup) == 6, "the good copy was overwritten with the damaged state"
 
+    def test_a_damaged_database_is_never_backed_up(self, tmp_path):
+        """A backup of corruption is worse than no backup: it gets trusted.
+
+        The first version copied whatever was there. It duly preserved an
+        already-damaged database, and the copy failed `quick_check` exactly like
+        the original it was meant to protect against.
+        """
+        db = tmp_path / "history.db"
+        populate(db, count=5)
+        backup = tmp_path / "history-backup.db"
+        good = backup.read_bytes()
+
+        corrupt(db)
+        conn = store.open_db(db)          # quarantines, then starts clean
+        try:
+            store.snapshot(conn, db)
+        finally:
+            conn.close()
+
+        assert backup.read_bytes() == good, "the good copy was replaced"
+
     def test_the_backup_is_readable_on_its_own(self, tmp_path):
         db = tmp_path / "history.db"
         populate(db, count=4)

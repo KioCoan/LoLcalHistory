@@ -348,16 +348,14 @@ def _launch(installer: Path) -> None:
     the installer by hand with the app open.
     """
     log_path = config.DATA_DIR / "install.log"
-    arguments = ",".join(
-        f"'{flag}'"
-        for flag in (
-            "/VERYSILENT",
-            "/SUPPRESSMSGBOXES",
-            "/NORESTART",
-            "/CLOSEAPPLICATIONS",
-            f"/LOG={log_path}",
-        )
-    )
+    flags = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"]
+    # Wrapped in real quotes, because the data folder is "LoLcal History" and
+    # Start-Process joins its argument list with spaces without quoting any of
+    # it. Unquoted, Setup received "/LOG=...\LoLcal" and wrote its log to a
+    # stray file of that name — which is how a failed update left no log at all
+    # in the place anyone would look for one.
+    quoted_log = str(log_path).replace('"', '""')
+    arguments = ",".join([f"'{flag}'" for flag in flags] + [f"'\"/LOG={quoted_log}\"'"])
     # Doubled single quotes are PowerShell's escape inside a single-quoted
     # string; paths here are under the user's profile and may contain either.
     installer_literal = str(installer).replace("'", "''")
