@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from datetime import datetime
 
 from . import backfill as backfill_mod
 from . import config, health, icons, probe, ranked, static_data, store
@@ -281,6 +282,43 @@ def cmd_gui(args: argparse.Namespace) -> int:
     return run_desktop(with_watcher=not args.no_watcher, port=args.port)
 
 
+def cmd_restore(args: argparse.Namespace) -> int:
+    """Put the verified backup back, keeping the current file aside."""
+    live = config.DB_PATH
+    backup = live.with_name(f"{live.stem}-backup{live.suffix}")
+
+    if not backup.exists():
+        print(f"No backup at {backup}.")
+        print("The raw archive can still rebuild the history — see the README.")
+        return 1
+
+    held = store.backup_match_count(backup)
+    current = store.backup_match_count(live) if live.exists() else 0
+    print(f"backup holds {held} matches; the current database holds {current}")
+
+    if held <= current and not args.force:
+        print("The backup is not better than what you have. Use --force to restore anyway.")
+        return 1
+    if not store.is_readable(backup):
+        print("The backup does not pass its integrity check; refusing to restore from it.")
+        return 1
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    if live.exists():
+        aside = live.with_name(f"{live.stem}-replaced-{stamp}{live.suffix}")
+        live.replace(aside)
+        print(f"kept the current database as {aside.name}")
+    for suffix in ("-wal", "-shm"):
+        companion = live.with_name(live.name + suffix)
+        if companion.exists():
+            companion.unlink()
+
+    shutil.copy2(backup, live)
+    print(f"restored {held} matches from {backup.name}")
+    print("Close the app first if it is running, then reopen it.")
+    return 0
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     conn = store.open_db()
     total = store.match_count(conn)
@@ -384,6 +422,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_gui.add_argument("--port", type=int, default=None, help="fix the internal port")
     p_gui.set_defaults(func=cmd_gui)
+
+    p_restore = sub.add_parser(
+        "restore", help="put the verified backup back after a loss"
+    )
+    p_restore.add_argument(
+        "--force", action="store_true",
+        help="restore even when the backup is not larger"
+    )
+    p_restore.set_defaults(func=cmd_restore)
 
     p_stats = sub.add_parser("stats", help="champion summary in the terminal")
     p_stats.add_argument("--limit", type=int, default=20)

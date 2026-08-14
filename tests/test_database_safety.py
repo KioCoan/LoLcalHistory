@@ -113,6 +113,39 @@ class TestQuarantine:
         assert health.is_degraded() is False or True  # recorded either way
 
 
+class TestDurability:
+    """A captured game must survive losing the write-ahead log.
+
+    This is the fault that emptied a history twice, and it never looked like a
+    fault: SQLite only folds the log back into the database after 1000 pages —
+    four megabytes — and a match costs a few kilobytes, so it never happened.
+    Weeks of games lived only in `history.db-wal`. Anything that invalidated
+    that file (a reboot, a replaced main file, a stale -shm) dropped the
+    database to its last checkpoint, which stayed perfectly *healthy* and
+    simply old. `quick_check` said ok, nothing was corrupt, and the games were
+    gone.
+    """
+
+    def test_games_survive_the_log_being_thrown_away(self, tmp_path):
+        db = tmp_path / "history.db"
+        populate(db, count=8, reopen=False)
+
+        for suffix in ("-wal", "-shm"):
+            companion = tmp_path / f"history.db{suffix}"
+            if companion.exists():
+                companion.unlink()
+
+        assert _count(db) == 8, "the games only ever existed in the log"
+
+    def test_the_log_does_not_grow_unchecked(self, tmp_path):
+        db = tmp_path / "history.db"
+        populate(db, count=15, reopen=False)
+        wal = tmp_path / "history.db-wal"
+        size = wal.stat().st_size if wal.exists() else 0
+
+        assert size < 200_000, f"the log is {size} bytes; it is not being folded in"
+
+
 class TestSnapshot:
     def test_a_copy_is_kept(self, tmp_path):
         db = tmp_path / "history.db"

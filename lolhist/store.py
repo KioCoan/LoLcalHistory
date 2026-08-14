@@ -113,7 +113,7 @@ def _migrate_rank_progress(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE rank_progress_migrating RENAME TO rank_progress")
 
 
-def _readable(path: Path) -> bool:
+def is_readable(path: Path) -> bool:
     """Can this file still answer for its own schema?"""
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
@@ -149,7 +149,7 @@ def quarantine_if_damaged(path: Path) -> Path | None:
     """
     if not path.exists() or path.stat().st_size == 0:
         return None  # a fresh install, which is not a fault
-    if _readable(path):
+    if is_readable(path):
         return None
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -194,6 +194,16 @@ def open_db(path: Path | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     with _DB_LOCK:
         conn.execute("PRAGMA foreign_keys = ON")
+        # A committed game must be in the database file, not parked in a log
+        # beside it. SQLite's default only folds the write-ahead log back in
+        # after 1000 pages — four megabytes — and this database writes a few
+        # kilobytes per match, so in practice it never happened: a month of
+        # games could sit entirely in the WAL. Anything that then invalidated
+        # that file (a reboot, a replaced main file, a stale -shm) dropped the
+        # database back to its last checkpoint, which stayed *healthy* and
+        # simply old. It reads as "my history vanished" with nothing broken
+        # anywhere to explain it.
+        conn.execute("PRAGMA wal_autocheckpoint = 32")   # ~128 KB
         # Migrate before the schema script: it recreates the views, which would
         # fail if they reference columns the old tables do not have yet.
         _migrate(conn)
@@ -203,7 +213,22 @@ def open_db(path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
-def _match_count(path: Path) -> int:
+def checkpoint(conn: sqlite3.Connection) -> bool:
+    """Fold the write-ahead log back into the database file.
+
+    Called after each captured game. The cost is a few milliseconds; the thing
+    it buys is that a finished game survives anything that happens to the log.
+    """
+    try:
+        with _DB_LOCK:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return True
+    except sqlite3.Error:
+        log.debug("could not checkpoint the write-ahead log", exc_info=True)
+        return False
+
+
+def backup_match_count(path: Path) -> int:
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     except sqlite3.Error:
@@ -246,11 +271,26 @@ def snapshot(conn: sqlite3.Connection, source: Path) -> Path | None:
                 "can still rebuild the history.", source.name, check[0] if check else "?",
             )
             return None
-        if backup_path.exists() and _match_count(backup_path) > live:
-            log.warning(
-                "not overwriting %s: it holds more matches (%d) than the live "
-                "database (%d)", backup_path.name, _match_count(backup_path), live,
+        held = backup_match_count(backup_path) if backup_path.exists() else 0
+        if held > live:
+            # The history has shrunk. Refusing the copy protects the good one,
+            # but silence here is how this went unnoticed for days — so it is
+            # also reported where the dashboard puts a red banner.
+            log.error(
+                "The history has %d matches but %s holds %d. Not overwriting it. "
+                "Restore with: lolhist restore",
+                live, backup_path.name, held,
             )
+            try:
+                from . import health
+
+                health.record_failure(
+                    "HistoryShrank",
+                    f"the database has {live} matches but the backup holds {held}; "
+                    "run `lolhist restore` to put the backup back",
+                )
+            except Exception:
+                log.debug("could not record the shrinkage in health", exc_info=True)
             return None
 
         target = backup_path.with_suffix(backup_path.suffix + ".tmp")
@@ -371,7 +411,12 @@ def upsert_match(conn: sqlite3.Connection, match: Match) -> str:
     permanently labelled "KIWI" with a null queue.
     """
     with _DB_LOCK:
-        return _upsert_match_locked(conn, match)
+        outcome = _upsert_match_locked(conn, match)
+    # Committed is not the same as safe here. Until the write-ahead log is
+    # folded in, the game exists only in a file alongside the database, and
+    # anything that invalidates that file takes the game with it.
+    checkpoint(conn)
+    return outcome
 
 
 def _upsert_match_locked(conn: sqlite3.Connection, match: Match) -> str:
