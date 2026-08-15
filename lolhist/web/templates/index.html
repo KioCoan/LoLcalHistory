@@ -5,18 +5,23 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LoLcal History</title>
 <style>
+  /* Dark is the base; `data-theme="light"` swaps the palette. The attribute is
+     set from the system preference before the page paints and overridden by a
+     saved choice, so there is no `prefers-color-scheme` query anywhere below —
+     one light block rather than one per media query. See setTheme(). */
   :root {
-    color-scheme: light dark;
+    color-scheme: dark;
     --bg: #0f1115; --panel: #171a21; --panel-2: #1e222b; --line: #272c37;
     --text: #e6e8ee; --muted: #939bad; --accent: #5b9dd9;
     --win: #46a758; --loss: #d4484b;
+    --team-blue: #5b9dd9; --team-red: #e0696d;
     --radius: 10px;
   }
-  @media (prefers-color-scheme: light) {
-    :root {
-      --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f0f2f5; --line: #e0e3e9;
-      --text: #1a1d23; --muted: #666e7d; --accent: #2a6fb0;
-    }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f0f2f5; --line: #e0e3e9;
+    --text: #1a1d23; --muted: #666e7d; --accent: #2a6fb0;
+    --team-blue: #2a6fb0; --team-red: #b32529;
   }
   * { box-sizing: border-box; }
   body {
@@ -30,6 +35,13 @@
      has not been copied yet the <img> is removed and the text stands alone, so
      the layout never depends on the picture arriving. */
   .hdr { display: flex; align-items: center; gap: 11px; margin-bottom: 20px; }
+  /* Pushed to the far end of the header, opposite the account. */
+  #theme { margin-left: auto; flex: none; display: inline-flex; align-items: center;
+           justify-content: center; width: 34px; height: 34px; padding: 0; cursor: pointer;
+           background: var(--panel); color: var(--muted);
+           border: 1px solid var(--line); border-radius: 8px; }
+  #theme:hover { background: var(--panel-2); color: var(--text); }
+  #theme svg { width: 17px; height: 17px; display: block; }
   .pfp { width: 42px; height: 42px; border-radius: 50%; flex: none;
          border: 1px solid var(--line); background: var(--panel-2); }
   .champ { width: 24px; height: 24px; border-radius: 5px; flex: none;
@@ -44,7 +56,10 @@
   .build .slot img { width: 100%; height: 100%; display: block; border-radius: 3px; }
   /* The trinket is not part of the build proper; a gap says so. */
   .build .trinket { margin-left: 5px; }
-  .spells { display: inline-flex; flex-direction: column; gap: 2px; margin-right: 5px; }
+  /* Fixed width and never collapsed: a player whose spells the client did not
+     report still holds the column open, so the builds beside them stay in line. */
+  .spells { display: inline-flex; flex-direction: column; gap: 2px; margin-right: 5px;
+            width: 15px; flex: none; }
   .spells img { width: 15px; height: 15px; border-radius: 3px; }
   .teams li { display: flex; align-items: flex-start; gap: 7px; }
   .teams .champ { width: 22px; height: 22px; }
@@ -78,20 +93,18 @@
   .r-master      { color: #b473e6; }
   .r-grandmaster { color: #e6696d; }
   .r-challenger  { color: #46cfe6; }
-  @media (prefers-color-scheme: light) {
-    .r-salt        { color: #506874; }
-    .r-wood        { color: #85603a; }
-    .r-iron        { color: #6f6763; }
-    .r-bronze      { color: #97612f; }
-    .r-silver      { color: #5c6a72; }
-    .r-gold        { color: #7f6000; }
-    .r-platinum    { color: #16786a; }
-    .r-emerald     { color: #1b7a44; }
-    .r-diamond     { color: #2e63c0; }
-    .r-master      { color: #7a35b5; }
-    .r-grandmaster { color: #b32529; }
-    .r-challenger  { color: #15768a; }
-  }
+  [data-theme="light"] .r-salt        { color: #506874; }
+  [data-theme="light"] .r-wood        { color: #85603a; }
+  [data-theme="light"] .r-iron        { color: #6f6763; }
+  [data-theme="light"] .r-bronze      { color: #97612f; }
+  [data-theme="light"] .r-silver      { color: #5c6a72; }
+  [data-theme="light"] .r-gold        { color: #7f6000; }
+  [data-theme="light"] .r-platinum    { color: #16786a; }
+  [data-theme="light"] .r-emerald     { color: #1b7a44; }
+  [data-theme="light"] .r-diamond     { color: #2e63c0; }
+  [data-theme="light"] .r-master      { color: #7a35b5; }
+  [data-theme="light"] .r-grandmaster { color: #b32529; }
+  [data-theme="light"] .r-challenger  { color: #15768a; }
 
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 20px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
@@ -126,6 +139,11 @@
   .teams ul { list-style: none; margin: 0; padding: 0; }
   .teams li { padding: 3px 0; color: var(--muted); font-size: 12px; }
   .teams li b { color: var(--text); font-weight: 500; }
+  /* 100 and 200 are the ids the client uses; blue and red are what the game
+     calls them and what anyone reading this actually saw on screen. */
+  .teams .side { font-weight: 600; }
+  .teams .side.blue { color: var(--team-blue); }
+  .teams .side.red  { color: var(--team-red); }
   .augs { margin-top: 8px; }
   .augs .pill { margin: 0 4px 4px 0; color: var(--text); }
   .empty { padding: 28px; text-align: center; color: var(--muted); }
@@ -175,12 +193,26 @@
   }
   .updated { color: var(--muted); font-size: 12px; }
 </style>
+<script>
+// Runs before the body renders, so the window never flashes the wrong theme on
+// the way to the right one. A saved choice always wins; without one, follow the
+// system. localStorage is wrapped because it throws outright in some contexts
+// rather than returning null, and a dead theme button beats a dead page.
+(function () {
+  var saved = null;
+  try { saved = localStorage.getItem("theme"); } catch (e) {}
+  var system = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  document.documentElement.dataset.theme =
+    (saved === "light" || saved === "dark") ? saved : system;
+})();
+</script>
 </head>
 <body>
 <div class="wrap">
   <div class="hdr">
     <img id="pfp" class="pfp" alt="" hidden>
     <h1 id="who">LoLcal History</h1>
+    <button id="theme" type="button"></button>
   </div>
 
   <div id="update"></div>
@@ -223,6 +255,41 @@ let sortBy = {};
 const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
 const num = (v, d = 0) => (v === null || v === undefined ? "—" : Number(v).toFixed(d));
+
+// Stroke-only so they take their colour from the button, in either theme.
+const ICON_MOON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+  ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
+const ICON_SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+  ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/>' +
+  '<path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2' +
+  'M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+
+const themeNow = () => document.documentElement.dataset.theme === "light" ? "light" : "dark";
+
+// The icon shows where a click leads, not where you already are — a sun while
+// it is dark out. Labelled too, since an icon alone does not say which way.
+function paintThemeButton() {
+  const next = themeNow() === "light" ? "dark" : "light";
+  const button = $("#theme");
+  button.innerHTML = next === "dark" ? ICON_MOON : ICON_SUN;
+  button.title = `Switch to the ${next} theme`;
+  button.setAttribute("aria-label", button.title);
+}
+
+// `remember` is false when the system itself changed: following along is not a
+// choice, and recording it would freeze the page on whatever it happened to be.
+function setTheme(theme, { remember = true } = {}) {
+  document.documentElement.dataset.theme = theme;
+  if (remember) {
+    try { localStorage.setItem("theme", theme); } catch (e) { /* not fatal */ }
+  }
+  paintThemeButton();
+}
+
+function savedTheme() {
+  try { return localStorage.getItem("theme"); } catch (e) { return null; }
+}
 
 // null means "follow whoever is logged in", which is what the server does when
 // no account is sent. Only an explicit pick from the selector overrides that, so
@@ -330,18 +397,20 @@ function championCell(r) {
          `<span>${name}</span></div>`;
 }
 
-// Six item slots then the trinket. Empty slots are drawn rather than skipped so
-// a four-item game does not look like a six-item one.
+// Two spells, six item slots, then the trinket — every one of them drawn
+// whether or not it is filled, so a build is always exactly as wide as any
+// other. Empty slots were already drawn for the six items; the trinket and the
+// spells were not, and a build sits at the end of a flex row, so a player
+// missing either pulled their whole line out of step with the rest of the team.
+// ARAM shows it worst: Poro-Snax fills the trinket for most players and not all.
 function buildCell(r) {
   const slot = (id, cls = "slot") =>
     `<span class="${cls}">${id ? icon("item", id, "", assetNames.items[id]) : ""}</span>`;
   const items = [0, 1, 2, 3, 4, 5].map(n => slot(r["item" + n])).join("");
-  const trinket = r.item6 ? slot(r.item6, "slot trinket") : "";
-  const spells = (r.spell1_id || r.spell2_id)
-    ? `<span class="spells">${icon("spell", r.spell1_id, "", assetNames.spells[r.spell1_id])}` +
-      `${icon("spell", r.spell2_id, "", assetNames.spells[r.spell2_id])}</span>`
-    : "";
-  if (!items && !trinket) return '<span class="muted">—</span>';
+  const trinket = slot(r.item6, "slot trinket");
+  const spells = '<span class="spells">' +
+    icon("spell", r.spell1_id, "", assetNames.spells[r.spell1_id]) +
+    icon("spell", r.spell2_id, "", assetNames.spells[r.spell2_id]) + "</span>";
   return `<div class="build">${spells}${items}${trinket}</div>`;
 }
 
@@ -462,8 +531,8 @@ function matchDetail(r, key) {
   return `<tr class="detail" data-detail="${esc(key)}" hidden><td colspan="12">
     ${augs.length ? `<div class="augs"><b>Augments:</b> ${augs.map(a => `<span class="pill">${esc(a)}</span>`).join(" ")}</div>` : ""}
     <div class="teams" style="margin-top:6px">
-      <div><b>Team 100</b><ul>${side(100)}</ul></div>
-      <div><b>Team 200</b><ul>${side(200)}</ul></div>
+      <div><b class="side blue">Team Blue</b><ul>${side(100)}</ul></div>
+      <div><b class="side red">Team Red</b><ul>${side(200)}</ul></div>
     </div>
     ${anyApprox ? '<div class="muted" style="margin-top:8px">* current rank — this game predates rank capture, and nothing can say now what someone was ranked at the time.</div>' : ""}
     </td></tr>`;
@@ -753,6 +822,15 @@ async function boot() {
     expanded.clear();
     refreshAll({ silent: false });
   };
+
+  paintThemeButton();
+  $("#theme").onclick = () => setTheme(themeNow() === "light" ? "dark" : "light");
+
+  // Keep following the system until the button is used — after that the choice
+  // stands, and Windows switching to night mode no longer overrides it.
+  window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", (e) => {
+    if (!savedTheme()) setTheme(e.matches ? "light" : "dark", { remember: false });
+  });
 
   $("#refresh").onclick = () => refreshAll({ silent: false });
   document.addEventListener("keydown", (e) => {
