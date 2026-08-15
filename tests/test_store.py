@@ -202,3 +202,43 @@ def test_my_matches_view_needs_me(conn):
     teammate = conn.execute("SELECT name, games FROM v_teammates").fetchone()
     assert teammate["name"] == "Friend"
     assert teammate["games"] == 1
+
+
+class TestAugmentSlotCollision:
+    """A duplicate augment slot must never cost a whole match.
+
+    The normalizer collapses these now, so this should be unreachable — but the
+    last payload change made it reachable, `INSERT` threw, and eight captures in
+    a row were refused over an augment. The stat is worth less than the game.
+    """
+
+    def a_match_with_a_repeated_slot(self) -> Match:
+        match = make_match("eog")
+        match.participants[0].augments = [
+            Augment(slot=1, augment_id=1156),
+            Augment(slot=1, augment_id=1156),
+        ]
+        return match
+
+    def test_the_match_is_still_stored(self, tmp_path):
+        conn = store.open_db(tmp_path / "history.db")
+        match = self.a_match_with_a_repeated_slot()
+        try:
+            store.upsert_match(conn, match)
+            assert conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0] == 1
+            assert conn.execute(
+                "SELECT COUNT(*) FROM participants"
+            ).fetchone()[0] == len(match.participants), "the whole team went with it"
+        finally:
+            conn.close()
+
+    def test_the_slot_is_stored_once(self, tmp_path):
+        conn = store.open_db(tmp_path / "history.db")
+        try:
+            store.upsert_match(conn, self.a_match_with_a_repeated_slot())
+            rows = conn.execute(
+                "SELECT slot, augment_id FROM participant_augments"
+            ).fetchall()
+            assert [(r["slot"], r["augment_id"]) for r in rows] == [(1, 1156)]
+        finally:
+            conn.close()

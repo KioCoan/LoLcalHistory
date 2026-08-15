@@ -1052,12 +1052,20 @@ def _insert_participant(conn: sqlite3.Connection, match: Match, p: Participant) 
             *items, p.spell1_id, p.spell2_id,
         ),
     )
+    # The normalizer already collapses a slot that arrives twice, so the
+    # conflict clause should never fire. It is here because the last time a
+    # payload grew a duplicate slot, this statement threw and took the entire
+    # capture with it — eight games in a row refused over an augment nobody
+    # would have missed. A stat is not worth losing a match for.
     for augment in p.augments:
         conn.execute(
             """
             INSERT INTO participant_augments
                 (game_id, platform_id, participant_id, slot, augment_id, augment_name)
             VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(game_id, platform_id, participant_id, slot)
+            DO UPDATE SET augment_id   = excluded.augment_id,
+                          augment_name = excluded.augment_name
             """,
             (
                 match.game_id, match.platform_id, p.participant_id,

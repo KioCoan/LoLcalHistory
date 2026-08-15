@@ -109,16 +109,33 @@ def _extract_augments(stats: Bag) -> list[Augment]:
     Mayhem and Arena hand out different numbers of augments and Riot has changed
     the count between patches, so anything matching `playerAugment<n>` or
     `augment<n>` is picked up regardless of how many there turn out to be.
+
+    Keyed by slot, because the same slot can arrive more than once. A patch
+    started sending both spellings at the same time:
+
+        PLAYER_AUGMENT_1 = 1156
+        playerAugment1   = 1156
+
+    and `Bag` deliberately folds those to one name, so each slot was collected
+    twice — which the database rightly refused, failing the whole capture.
+    Their values have always agreed; if they ever stop, the first wins and the
+    disagreement is logged rather than guessed at.
     """
-    found: list[tuple[int, int]] = []
+    found: dict[int, int] = {}
     for key, value in stats.items():
         match = _AUGMENT_KEY.match(Bag._normalize(key))
         if not match:
             continue
         augment_id = _as_int(value)
-        if augment_id:  # 0 means "empty slot"
-            found.append((int(match.group(1)), augment_id))
-    return [Augment(slot=slot, augment_id=augment_id) for slot, augment_id in sorted(found)]
+        if not augment_id:  # 0 means "empty slot"
+            continue
+        slot = int(match.group(1))
+        if found.setdefault(slot, augment_id) != augment_id:
+            log.debug(
+                "augment slot %s given twice with different ids (%s, %s); keeping %s",
+                slot, found[slot], augment_id, found[slot],
+            )
+    return [Augment(slot=slot, augment_id=found[slot]) for slot in sorted(found)]
 
 
 def _resolve_names(participant: Participant, static: StaticData) -> None:

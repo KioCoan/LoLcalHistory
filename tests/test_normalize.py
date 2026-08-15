@@ -262,3 +262,46 @@ class TestEndOfGameBlock:
 
 def match_of(payload, static):
     return normalize(payload, static, source="eog")
+
+
+class TestDuplicatedAugmentSlots:
+    """A patch started sending both spellings of every augment key at once.
+
+    `Bag` folds `PLAYER_AUGMENT_1` and `playerAugment1` to one name on purpose —
+    that is what lets one mapper serve both payload shapes — so each slot was
+    collected twice. The database refused the duplicate and the whole capture
+    failed with it, eight games in a row, over a stat nobody would have missed.
+    """
+
+    def stats_with_both_spellings(self) -> dict:
+        return {
+            "PLAYER_AUGMENT_1": 1156, "playerAugment1": 1156,
+            "PLAYER_AUGMENT_2": 1181, "playerAugment2": 1181,
+            "PLAYER_AUGMENT_5": 0,    "playerAugment5": 0,
+        }
+
+    def test_a_slot_sent_twice_yields_one_augment(self):
+        from lolhist.normalize import _extract_augments
+        augments = _extract_augments(Bag(self.stats_with_both_spellings()))
+        assert [a.slot for a in augments] == [1, 2]
+        assert [a.augment_id for a in augments] == [1156, 1181]
+
+    def test_a_slot_empty_in_both_spellings_stays_dropped(self):
+        from lolhist.normalize import _extract_augments
+        slots = [a.slot for a in _extract_augments(Bag(self.stats_with_both_spellings()))]
+        assert 5 not in slots
+
+    def test_the_first_value_wins_when_the_two_disagree(self):
+        """They have always agreed. If they stop, guessing is worse than picking."""
+        from lolhist.normalize import _extract_augments
+        augments = _extract_augments(Bag({"PLAYER_AUGMENT_1": 1156, "playerAugment1": 999}))
+        assert [(a.slot, a.augment_id) for a in augments] == [(1, 1156)]
+
+    def test_slots_stay_ordered_and_unique(self):
+        from lolhist.normalize import _extract_augments
+        augments = _extract_augments(Bag({
+            "playerAugment3": 3, "PLAYER_AUGMENT_1": 1,
+            "augment2": 2, "PLAYER_AUGMENT_3": 3,
+        }))
+        slots = [a.slot for a in augments]
+        assert slots == [1, 2, 3] == sorted(set(slots))
