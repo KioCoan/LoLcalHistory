@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -129,53 +130,6 @@ class TestChecking:
         updates.check()
 
         assert len(calls) == 1, "GitHub was asked again inside the cache window"
-
-    def test_a_relaunch_does_not_reuse_a_hours_old_answer(self, monkeypatch):
-        """The reported bug: a release was published, the app was restarted, and
-        no update was offered — the six-hour cache answered instead. Opening the
-        app is exactly when someone expects to be told."""
-        calls = []
-
-        def counted(*a, **k):
-            calls.append(1)
-            return _ok(a_release())
-
-        monkeypatch.setattr(updates.httpx, "get", counted)
-        updates.check(force=True)
-        # Two hours on: well inside the ordinary window, well outside a launch's.
-        updates._state.checked_at -= 2 * 3600
-
-        updates.check(max_age=updates.STARTUP_MAX_AGE_SECONDS)
-        assert len(calls) == 2, "a relaunch reused an answer from hours ago"
-
-    def test_a_launch_seconds_later_still_uses_the_cache(self, monkeypatch):
-        """Relaunching a few times in a row must not mean a request each time."""
-        calls = []
-
-        def counted(*a, **k):
-            calls.append(1)
-            return _ok(a_release())
-
-        monkeypatch.setattr(updates.httpx, "get", counted)
-        updates.check(force=True)
-        updates.check(max_age=updates.STARTUP_MAX_AGE_SECONDS)
-
-        assert len(calls) == 1
-
-    def test_the_periodic_check_keeps_the_long_window(self, monkeypatch):
-        """Only a launch shortens it; a long-running session must not poll."""
-        calls = []
-
-        def counted(*a, **k):
-            calls.append(1)
-            return _ok(a_release())
-
-        monkeypatch.setattr(updates.httpx, "get", counted)
-        updates.check(force=True)
-        updates._state.checked_at -= 2 * 3600
-        updates.check()
-
-        assert len(calls) == 1, "the background check stopped honouring its cache"
 
     def test_the_cache_survives_a_restart(self, monkeypatch):
         monkeypatch.setattr(updates.httpx, "get", lambda *a, **k: _ok(a_release()))
@@ -357,6 +311,73 @@ class TestInstallSafety:
     def test_binary_marked_entries_are_understood(self):
         """`sha256sum -b` writes the name with a leading asterisk."""
         assert updates._expected_digest("abc *setup.exe\n", "setup.exe") == "abc"
+
+
+class TestRecurringCheck:
+    """Look on every launch, and keep looking while the window is open.
+
+    Neither happened before. One check was fired at startup and honoured a
+    six-hour cache, so a restart could reuse an answer from hours earlier — and
+    an app left open all week never looked a second time.
+    """
+
+    @pytest.fixture
+    def asked(self, monkeypatch):
+        calls = []
+
+        def counted(*a, **k):
+            calls.append(1)
+            return _ok(a_release())
+
+        monkeypatch.setattr(updates.httpx, "get", counted)
+        yield calls
+        updates.stop_checking()
+
+    def test_opening_the_app_always_asks(self, asked, monkeypatch):
+        """Even seconds after the last check — a launch is never served a cache."""
+        updates.check(force=True)
+        assert len(asked) == 1
+        updates.check_in_background(interval=3600)
+        _wait_until(lambda: len(asked) >= 2)
+        assert len(asked) == 2, "the launch check reused a cached answer"
+
+    def test_it_keeps_asking_while_the_app_is_open(self, asked):
+        updates.check_in_background(interval=0.02)
+        _wait_until(lambda: len(asked) >= 3)
+        assert len(asked) >= 3, "the check ran once and never again"
+
+    def test_stopping_ends_it(self, asked):
+        updates.check_in_background(interval=0.02)
+        _wait_until(lambda: len(asked) >= 2)
+        updates.stop_checking()
+        time.sleep(0.1)
+        settled = len(asked)
+        time.sleep(0.1)
+        assert len(asked) == settled, "it kept polling after shutdown"
+
+    def test_an_install_in_flight_is_left_alone(self, asked, monkeypatch):
+        updates.check_in_background(interval=0.02)
+        _wait_until(lambda: len(asked) >= 1)
+        updates._set(status="downloading")
+        time.sleep(0.05)
+        settled = len(asked)
+        time.sleep(0.1)
+        assert len(asked) == settled, "it polled GitHub mid-download"
+
+    def test_disabling_it_starts_no_thread(self, asked, monkeypatch):
+        monkeypatch.setenv("LOLHIST_NO_UPDATE_CHECK", "1")
+        updates.check_in_background(interval=0.01)
+        time.sleep(0.1)
+        assert asked == []
+
+    def test_the_interval_is_an_hour(self):
+        assert updates.CHECK_INTERVAL_SECONDS == 3600
+
+
+def _wait_until(predicate, timeout: float = 2.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline and not predicate():
+        time.sleep(0.005)
 
 
 class TestRelaunchEnvironment:

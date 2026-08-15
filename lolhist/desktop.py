@@ -262,19 +262,21 @@ class Application:
         problem with doing it the obvious way. `destroy()` tears down the
         webview's WinForms host, which lives in the CLR on the main thread;
         driving that from another thread access-violates inside the interpreter
-        and the process dies with
+        and the process dies mid-shutdown, which the event log records as a
+        `.NET Runtime` c0000005. Worth avoiding on its own account.
 
-            Failed to load Python DLL '...\\_MEIxxxxx\\python3xx.dll'
-
-        — the one-file bootloader having already begun removing the directory
-        the crashing process was still running out of. That dialog looked like
-        an installer fault for two rounds of fixes. It was ours.
+        It was also blamed, wrongly, for the "Failed to load Python DLL" dialog
+        users saw after an update. That had a separate cause — the relaunched
+        app inheriting the replaced version's unpack directory through the
+        environment; see `updates._unfrozen_env`. Two rounds of fixes went into
+        the wrong crash because the two happened seconds apart.
 
         So everything that owns data is closed properly and the process is then
         ended outright. Nothing is lost by skipping the GUI teardown: every
         write is already committed, and the executable is about to be replaced.
         """
         self._quitting = True
+        updates.stop_checking()
         try:
             if self.watcher is not None:
                 self.watcher.stop()      # joins, then closes its connection
@@ -360,6 +362,7 @@ class Application:
 
     def shutdown(self) -> None:
         log.info("shutting down")
+        updates.stop_checking()
         if self.tray is not None:
             self.tray.stop()
         if self.watcher is not None:

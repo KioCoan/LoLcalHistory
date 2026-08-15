@@ -30,9 +30,10 @@ displayed publicly. A private record of your own games, that never leaves your m
 is a different thing — and it stays that way only if the tool never grows an export.
 
 **The one request that goes out** is the update check: a `GET` to this repository's
-public releases API to compare version numbers. It carries no query, no body and no
-identifier, so all GitHub can observe is that some machine asked what the latest version
-is. Turn it off completely with `LOLHIST_NO_UPDATE_CHECK=1`.
+public releases API to compare version numbers, made when the app opens and once an hour
+while it stays open. It carries no query, no body and no identifier, so all GitHub can
+observe is that some machine asked what the latest version is. Turn it off completely
+with `LOLHIST_NO_UPDATE_CHECK=1`.
 
 ## Installing
 

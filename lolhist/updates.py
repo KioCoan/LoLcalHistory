@@ -35,12 +35,9 @@ from .version import LATEST_RELEASE_API, RELEASES_URL, __version__, is_newer
 
 log = logging.getLogger(__name__)
 
-CHECK_INTERVAL_SECONDS = 6 * 3600
-
-# How stale the cached answer may be when the app starts. Short, because being
-# told at launch is the whole point; not zero, so relaunching repeatedly does
-# not mean a request per launch.
-STARTUP_MAX_AGE_SECONDS = 15 * 60
+# How often to look again while the app sits open. One request an hour to a
+# public endpoint, sending nothing about you — see the module docstring.
+CHECK_INTERVAL_SECONDS = 3600
 CACHE_FILE = "update.json"
 CHECKSUM_ASSET = "SHA256SUMS.txt"
 DOWNLOAD_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
@@ -194,19 +191,14 @@ def _parse_release(payload: dict) -> Release:
     return release
 
 
-def check(force: bool = False, max_age: float | None = None) -> dict:
-    """Ask GitHub for the latest release. Cheap, cached, and never fatal.
-
-    `max_age` overrides how stale the cached answer may be before it is asked
-    again. The startup check passes a short one — see `check_in_background`.
-    """
+def check(force: bool = False) -> dict:
+    """Ask GitHub for the latest release. Cheap, cached, and never fatal."""
     if not enabled():
         return state()
 
     if not _state.checked_at:
         _load_cache()
-    limit = CHECK_INTERVAL_SECONDS if max_age is None else max_age
-    if not force and time.time() - _state.checked_at < limit:
+    if not force and time.time() - _state.checked_at < CHECK_INTERVAL_SECONDS:
         return state()
 
     try:
@@ -473,23 +465,43 @@ def start_install() -> dict:
     return state()
 
 
-def check_in_background() -> None:
-    """Fire the startup check without delaying anything else.
+_stop_checking = threading.Event()
 
-    Opening the app is when someone expects to be told about a new version, so
-    a launch does not honour the six-hour cache — it went a whole release
-    unnoticed because the app had last checked two hours earlier and simply
-    reused that answer. The short window still holds, so quitting and relaunching
-    a few times in a row does not mean a request each time.
+
+def _check_loop(interval: float) -> None:
+    """Check once for the launch, then once an interval until asked to stop."""
+    check(force=True)
+    while not _stop_checking.wait(interval):
+        # Nothing to learn mid-install, and the answer would be discarded
+        # anyway — the version being installed is already known.
+        if _state.status in ("downloading", "verifying", "installing"):
+            continue
+        check(force=True)
+
+
+def check_in_background(interval: float = CHECK_INTERVAL_SECONDS) -> None:
+    """Check on launch, then hourly for as long as the app stays open.
+
+    The launch check is forced rather than cached. Opening the app is when
+    someone expects to be told about a new version, and a cached answer meant a
+    release went unnoticed across a restart because the app had last looked two
+    hours earlier.
+
+    Nothing re-checked at all before this: the interval existed but only one
+    check was ever fired, so an app left open for a week never looked again.
     """
     if not enabled():
         log.info("update check disabled by LOLHIST_NO_UPDATE_CHECK")
         return
+    _stop_checking.clear()
     threading.Thread(
-        target=lambda: check(max_age=STARTUP_MAX_AGE_SECONDS),
-        name="update-check",
-        daemon=True,
+        target=_check_loop, args=(interval,), name="update-check", daemon=True
     ).start()
+
+
+def stop_checking() -> None:
+    """End the recurring check. Called when the app shuts down."""
+    _stop_checking.set()
 
 
 def describe() -> str:
