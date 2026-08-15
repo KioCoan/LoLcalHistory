@@ -130,6 +130,53 @@ class TestChecking:
 
         assert len(calls) == 1, "GitHub was asked again inside the cache window"
 
+    def test_a_relaunch_does_not_reuse_a_hours_old_answer(self, monkeypatch):
+        """The reported bug: a release was published, the app was restarted, and
+        no update was offered — the six-hour cache answered instead. Opening the
+        app is exactly when someone expects to be told."""
+        calls = []
+
+        def counted(*a, **k):
+            calls.append(1)
+            return _ok(a_release())
+
+        monkeypatch.setattr(updates.httpx, "get", counted)
+        updates.check(force=True)
+        # Two hours on: well inside the ordinary window, well outside a launch's.
+        updates._state.checked_at -= 2 * 3600
+
+        updates.check(max_age=updates.STARTUP_MAX_AGE_SECONDS)
+        assert len(calls) == 2, "a relaunch reused an answer from hours ago"
+
+    def test_a_launch_seconds_later_still_uses_the_cache(self, monkeypatch):
+        """Relaunching a few times in a row must not mean a request each time."""
+        calls = []
+
+        def counted(*a, **k):
+            calls.append(1)
+            return _ok(a_release())
+
+        monkeypatch.setattr(updates.httpx, "get", counted)
+        updates.check(force=True)
+        updates.check(max_age=updates.STARTUP_MAX_AGE_SECONDS)
+
+        assert len(calls) == 1
+
+    def test_the_periodic_check_keeps_the_long_window(self, monkeypatch):
+        """Only a launch shortens it; a long-running session must not poll."""
+        calls = []
+
+        def counted(*a, **k):
+            calls.append(1)
+            return _ok(a_release())
+
+        monkeypatch.setattr(updates.httpx, "get", counted)
+        updates.check(force=True)
+        updates._state.checked_at -= 2 * 3600
+        updates.check()
+
+        assert len(calls) == 1, "the background check stopped honouring its cache"
+
     def test_the_cache_survives_a_restart(self, monkeypatch):
         monkeypatch.setattr(updates.httpx, "get", lambda *a, **k: _ok(a_release()))
         updates.check(force=True)
@@ -310,6 +357,59 @@ class TestInstallSafety:
     def test_binary_marked_entries_are_understood(self):
         """`sha256sum -b` writes the name with a leading asterisk."""
         assert updates._expected_digest("abc *setup.exe\n", "setup.exe") == "abc"
+
+
+class TestRelaunchEnvironment:
+    """The updater spawns a process whose whole job is to outlive this one.
+
+    A one-file build points its child at `%TEMP%\\_MEIxxxxxx` through the
+    environment, and that pointer is inherited by anything spawned. The
+    relaunched app therefore started up believing it was already unpacked — into
+    the directory belonging to the version that had just been replaced:
+
+        Failed to load Python DLL '...\\_MEI127082\\python313.dll'
+
+    Three timing fixes went in before this was found, because a hand-started app
+    has no such variable and always worked.
+    """
+
+    @pytest.fixture
+    def spawned(self, monkeypatch, tmp_path):
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, argv, **kwargs):
+                captured["argv"] = argv
+                captured["env"] = kwargs.get("env")
+
+        monkeypatch.setattr(updates.subprocess, "Popen", FakePopen)
+        monkeypatch.setattr(updates, "_quit_hook", None)
+        monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+        return captured
+
+    @pytest.mark.parametrize("name", updates._PYI_ENV_VARS)
+    def test_every_one_file_variable_is_dropped(self, spawned, monkeypatch, name, tmp_path):
+        monkeypatch.setenv(name, r"C:\Users\x\AppData\Local\Temp\_MEI127082")
+        updates._launch(tmp_path / "Setup.exe")
+
+        assert spawned["env"] is not None, "the environment was inherited wholesale"
+        assert name not in spawned["env"], (
+            f"{name} survived; the relaunched app would look for its interpreter "
+            "in the replaced version's unpack directory"
+        )
+
+    def test_unknown_pyi_variables_are_dropped_too(self, spawned, monkeypatch, tmp_path):
+        """PyInstaller has renamed these before and may again."""
+        monkeypatch.setenv("_PYI_SOMETHING_NEW", "whatever")
+        updates._launch(tmp_path / "Setup.exe")
+        assert "_PYI_SOMETHING_NEW" not in spawned["env"]
+
+    def test_the_rest_of_the_environment_is_kept(self, spawned, monkeypatch, tmp_path):
+        """Stripping too much would break the installer it has to run."""
+        monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\x\AppData\Local")
+        monkeypatch.setenv("_MEIPASS2", r"C:\stale")
+        updates._launch(tmp_path / "Setup.exe")
+        assert spawned["env"]["LOCALAPPDATA"] == r"C:\Users\x\AppData\Local"
 
 
 class TestDashboard:
