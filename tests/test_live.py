@@ -485,7 +485,14 @@ JADE_NAMES = {
 
 
 class JadeClient(FakeLcu):
+    """In a League Classic game, with an old rune page on the account.
+
+    The queue matters: the Classic loadout is reached for on the strength of
+    the mode alone, so a client in any other mode must not see it.
+    """
+
     def __init__(self, loadout=None, **kw):
+        kw.setdefault("game_data", dict(GAME_DATA, queue=CLASSIC_QUEUE))
         super().__init__(**kw)
         self.loadout = a_loadout() if loadout is None else loadout
 
@@ -543,6 +550,44 @@ def test_only_the_active_page_is_read():
     assert page["seals"] == [{"id": 775317, "name": "Seal of Armor", "count": 9}]
 
 
+CLASSIC_QUEUE = {"id": 4310, "gameMode": "JADE", "name": "Classic 5v5", "isRanked": True}
+# ARAM: Mayhem. Reports runes for nobody, exactly like Classic does — which is
+# what made "no modern runes" a broken test for "this is Classic".
+MAYHEM_QUEUE = {"id": 2400, "gameMode": "KIWI", "name": "ARAM: Mayhem"}
+
+
+@pytest.mark.parametrize("queue_id, game_mode, expected", [
+    (4310, "JADE", True),
+    (4320, "JADE", True),
+    (None, "jade", True),          # matched case-insensitively
+    (2400, "KIWI", False),         # ARAM: Mayhem
+    (450, "ARAM", False),
+    (420, "CLASSIC", False),       # Summoner's Rift, despite the mode's name
+    (None, None, False),
+])
+def test_only_league_classic_counts_as_classic(queue_id, game_mode, expected):
+    assert live.is_classic(queue_id, game_mode) is expected
+
+
+def test_mayhem_does_not_borrow_the_classic_rune_page(session, monkeypatch):
+    """The bug this exists for: a Mayhem game shown wearing the Classic page.
+
+    Mayhem reports no runes for anyone, and the old gate read that absence as
+    "this must be Classic".
+    """
+    game = dict(GAME_DATA, queue=MAYHEM_QUEUE)
+    lcu = JadeClient(game_data=game)
+    instance, _ = session(lcu)
+    monkeypatch.setattr(live, "_mirror_icons", lambda client, players: None)
+    snapshot = instance.snapshot()
+
+    assert snapshot["queue_name"] == "ARAM: Mayhem"
+    assert all(p["classic_runes"] is None for p in snapshot["players"])
+    assert all(p["masteries"] is None for p in snapshot["players"])
+    # And the loadout is not even fetched, since there is nothing there for it.
+    assert live.LOADOUTS not in lcu.calls
+
+
 def test_classic_runes_land_on_your_row_and_nobody_elses(session, monkeypatch):
     """The loadout is account-scoped, so it can only ever describe you."""
     lcu = JadeClient()
@@ -567,13 +612,16 @@ def test_the_loadout_is_read_once_per_match(session, monkeypatch):
 
 
 def test_a_modern_game_does_not_reach_for_the_classic_loadout(session, monkeypatch):
-    """Runes came through the in-game feed, so there is nothing to fall back to."""
-    lcu = JadeClient()
+    """Summoner's Rift has no old page behind it, so it is never asked for."""
+    lcu = JadeClient(game_data=GAME_DATA)          # queue 420
     instance, _ = session(lcu, feed=FakeLive(in_game_payload()))
     monkeypatch.setattr(live, "_mirror_icons", lambda client, players: None)
-    instance.snapshot()
+    players = instance.snapshot()["players"]
 
     assert live.LOADOUTS not in lcu.calls
+    assert all(p["classic_runes"] is None for p in players)
+    # The modern runes it does have are untouched by any of this.
+    assert players[0]["runes"]["keystone_id"] == 8010
 
 
 def test_a_broken_lookup_does_not_take_the_dashboard_down(session, monkeypatch):

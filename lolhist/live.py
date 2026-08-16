@@ -357,6 +357,23 @@ def roster(client: LcuClient, game: dict, static: StaticData, me: str = "") -> l
 
 LOADOUTS = "/lol-loadouts/v4/loadouts/scope/account"
 
+
+def is_classic(queue_id: int | None, game_mode: str | None) -> bool:
+    """Is this League Classic, and therefore an old rune page?
+
+    Asked of the mode itself rather than inferred from the absence of modern
+    runes. That inference was wrong and shipped: ARAM: Mayhem reports no runes
+    for anyone either, so a Mayhem game was shown wearing the Classic page.
+    Several modes report nothing; only this one has an old page behind it.
+
+    Built on the same constants `ranked` matches Classic games with, so a new
+    Classic queue id only has to be added in one place.
+    """
+    return (
+        queue_id in ranked.CLASSIC_QUEUE_IDS
+        or (game_mode or "").upper() in ranked.CLASSIC_GAME_MODES
+    )
+
 # The four slot colours of an old rune page, with how many each page holds.
 JADE_RUNE_SLOTS = (
     ("marks", "RED", 9),
@@ -709,16 +726,17 @@ class LiveSession:
         payload = self._live.all_game_data()
         ingame = overlay(players, payload)
 
-        # Classic reports nothing through the in-game feed, so its runes are
-        # read from the account loadout instead — and only for you, since that
-        # resource is account-scoped.
-        if not any(p.get("runes") for p in players):
+        queue = game.get("queue") or {}
+        # Only Classic. Its runes never come through the in-game feed, so they
+        # are read from the account loadout instead — and only for you, since
+        # that resource is account-scoped. Asked of the mode rather than of
+        # whether modern runes turned up: plenty of modes report none.
+        if is_classic(queue.get("id"), queue.get("gameMode")):
             self._apply_classic_loadout(client, players)
 
         if ingame or any(p.get("classic_runes") for p in players):
             _mirror_icons(client, players)
 
-        queue = game.get("queue") or {}
         static = self._static or static_data.StaticData()
         return {
             "live": True,
