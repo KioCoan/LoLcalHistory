@@ -96,6 +96,14 @@ are keyed by game id rather than position, so a newly finished game arriving at 
 cannot shift an expanded row onto a different match. Refreshes pause while the window is
 hidden in the tray.
 
+**The window reopens where you left it.** Its position, size and whether it was maximised
+are saved when you close it, hide it to the tray, or quit for an update, and restored on
+the next launch. A remembered position is checked against the monitors actually connected
+first: if you leave the window on a second screen and then unplug it, the size is kept but
+the position is dropped and the window is centred, rather than opening somewhere you
+cannot see it. Nothing is ever restored minimised, since that looks exactly like the app
+failing to start.
+
 **Launching it twice** does not start a second copy — two watchers on one database would
 both record every game and contend over the same rows. The second launch raises the
 window of the one already running, which is what you wanted anyway if it was sitting in

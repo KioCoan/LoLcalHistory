@@ -28,7 +28,7 @@ from typing import Any
 
 from werkzeug.serving import make_server
 
-from . import config, store, updates
+from . import config, geometry, store, updates
 from .singleton import SingleInstance
 from .watcher import Watcher
 from .web.app import create_app
@@ -231,6 +231,9 @@ class Application:
         self.tray: TrayIcon | None = None
         self.window: Any = None
         self._quitting = False
+        # Follows the window so its position outlives the process. Reading the
+        # window itself at shutdown is too late: by then it is being destroyed.
+        self.geometry = geometry.Tracker()
 
     def _on_closing(self) -> bool:
         """Hide to the tray instead of quitting, when there is a tray to hide to.
@@ -238,10 +241,38 @@ class Application:
         Returning False cancels the close. Without a tray icon there would be no
         way to get the window back, so in that case the close is allowed through.
         """
+        # Saved here rather than only on quit, because hiding to the tray is how
+        # this window usually stops being looked at — a session that ends by
+        # closing the window and quitting from the tray would otherwise record
+        # nothing.
+        self.geometry.persist()
         if self._quitting or self.tray is None:
             return True
         self.window.hide()
         return False
+
+    def _track_geometry(self) -> None:
+        """Follow the window so its placement survives the process.
+
+        Every handler is wrapped, because an exception raised inside a webview
+        event is swallowed by the backend and would leave the window silently
+        unable to remember anything. Minimising is deliberately not recorded:
+        an app that reopened minimised would look like it had failed to start.
+        """
+        events = self.window.events
+
+        def guard(fn):
+            def handler(*args):
+                try:
+                    fn(*args)
+                except Exception:
+                    log.debug("could not record the window geometry", exc_info=True)
+            return handler
+
+        events.moved += guard(lambda *a: self.geometry.moved(*a[:2]))
+        events.resized += guard(lambda *a: self.geometry.resized(*a[:2]))
+        events.maximized += guard(lambda *_a: self.geometry.set_maximized(True))
+        events.restored += guard(lambda *_a: self.geometry.set_maximized(False))
 
     def _open(self) -> None:
         if self.window is not None:
@@ -277,6 +308,10 @@ class Application:
         """
         self._quitting = True
         updates.stop_checking()
+        # Before `_exit`, which gives nothing after it a chance to run. An
+        # update that moved the window back to the middle of the screen would be
+        # a small, repeated annoyance.
+        self.geometry.persist()
         try:
             if self.watcher is not None:
                 self.watcher.stop()      # joins, then closes its connection
@@ -329,15 +364,24 @@ class Application:
             self.watcher.start()
             self.watcher.started.wait(timeout=5)
 
+        # Where it was last time, unless that place no longer exists — see
+        # `geometry.restore`, which drops a position that would open the window
+        # off the side of a monitor that has since been unplugged.
+        placement = geometry.restore(getattr(webview, "screens", ()))
+        # Seeded from the placement, not left empty: a window that is opened and
+        # closed without ever being dragged emits no move event, and an empty
+        # tracker would then save a position of "nowhere" over a good one.
+        self.geometry = geometry.Tracker.from_placement(placement)
+
         self.window = webview.create_window(
             WINDOW_TITLE,
             self.server.url,
-            width=1280,
-            height=860,
-            min_size=(900, 600),
+            min_size=(geometry.MIN_WIDTH, geometry.MIN_HEIGHT),
             confirm_close=False,
+            **placement,
         )
         self.window.events.closing += self._on_closing
+        self._track_geometry()
 
         self.tray = TrayIcon(on_open=self._open, on_quit=self._quit)
         if not self.tray.start():
@@ -362,6 +406,7 @@ class Application:
 
     def shutdown(self) -> None:
         log.info("shutting down")
+        self.geometry.persist()
         updates.stop_checking()
         if self.tray is not None:
             self.tray.stop()

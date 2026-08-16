@@ -73,6 +73,9 @@ def app(monkeypatch):
     instance.tray = FakeTray()
     instance.window = FakeWindow()
     instance._quitting = False
+    # Real, because quitting for an update saves the window position on its way
+    # out and a stub would hide a break in that path.
+    instance.geometry = desktop.geometry.Tracker()
     instance.exited = []
     monkeypatch.setattr(
         desktop.Application, "_exit", lambda self: self.exited.append(True)
