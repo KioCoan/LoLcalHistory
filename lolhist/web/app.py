@@ -15,7 +15,7 @@ from typing import Any
 
 from flask import Flask, jsonify, render_template, request, send_file
 
-from .. import config, health, icons, ranked, static_data, store, updates
+from .. import config, health, icons, live, ranked, static_data, store, updates
 
 
 def get_conn() -> sqlite3.Connection:
@@ -173,8 +173,30 @@ def create_app(on_show=None) -> Flask:
             {
                 "items": {str(k): v for k, v in static_data.asset_map("items", "name").items()},
                 "spells": {str(k): v for k, v in static_data.asset_map("spells", "name").items()},
+                # Runes, for the Live tab. A perk is one rune, a style is a
+                # whole tree, and the tab shows one of each per player.
+                "perks": {str(k): v for k, v in static_data.asset_map("perks", "name").items()},
+                "perkstyles": {
+                    str(k): v for k, v in static_data.asset_map("perkstyles", "name").items()
+                },
+                # League Classic's old runes. Keyed on `title`, not `name` —
+                # that asset file uses a different field for the display name.
+                "jaderunes": {
+                    str(k): v for k, v in static_data.asset_map("jaderunes", "title").items()
+                },
             }
         )
+
+    @app.route("/api/live")
+    def api_live():
+        """The match being played right now, or why there isn't one.
+
+        Nothing here comes from the database — it is read from the League
+        Client and the game itself on every call — so the account filters
+        deliberately do not apply. A live game belongs to whoever is logged in,
+        not to whichever account's history you happen to be reading.
+        """
+        return jsonify(live.snapshot())
 
     @app.route("/api/accounts")
     def api_accounts():

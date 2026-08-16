@@ -106,6 +106,21 @@
   [data-theme="light"] .r-grandmaster { color: #b32529; }
   [data-theme="light"] .r-challenger  { color: #15768a; }
 
+  /* The live tab. Two tables in one panel rather than the two-column list the
+     expanded match row uses: there is far more per player here, and a column
+     of ranks only reads as a column if it is one. */
+  .livehdr { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 12px 0; }
+  .livenote { padding: 6px 12px 0; }
+  .liveteam > .side { display: block; padding: 14px 12px 4px; }
+  /* The keystone is the thing you read; the secondary tree is context, so it
+     sits smaller and dimmer beside it rather than competing. */
+  .runes { display: inline-flex; align-items: center; gap: 4px; }
+  .runes img.rune { width: 22px; height: 22px; border-radius: 4px; }
+  .runes img.runetree { width: 15px; height: 15px; opacity: .8; }
+  /* Two lines, so the row keeps the height of every other row on the page. */
+  .mastery { line-height: 1.35; }
+  .mastery .tag { display: block; }
+
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 20px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
   .card .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
@@ -244,6 +259,9 @@
 
 <script>
 const TABS = [
+  // First, because it is the only tab that goes stale the moment you stop
+  // looking. `current` still starts on Matches, so opening the app is unchanged.
+  { id: "live",      label: "Live" },
   { id: "matches",   label: "Matches" },
   { id: "champions", label: "Champions" },
   { id: "augments",  label: "Augments" },
@@ -380,7 +398,7 @@ function rankLadders(p) {
 
 // Item and spell names, for the build tooltips. Loaded once — they only move on
 // a patch — and empty until then, which just means no tooltip.
-let assetNames = { items: {}, spells: {} };
+let assetNames = { items: {}, spells: {}, perks: {}, perkstyles: {}, jaderunes: {} };
 
 // An icon that removes itself if the mirror has not copied it yet, leaving
 // whatever text sits beside it as the only thing the row depends on.
@@ -412,6 +430,90 @@ function buildCell(r) {
     icon("spell", r.spell1_id, "", assetNames.spells[r.spell1_id]) +
     icon("spell", r.spell2_id, "", assetNames.spells[r.spell2_id]) + "</span>";
   return `<div class="build">${spells}${items}${trinket}</div>`;
+}
+
+// -- the live tab ----------------------------------------------------------
+// Everything below reuses the cells the history tabs already use — champion,
+// build, rank ladders, win-rate bar — so a live row and a stored one read the
+// same. Only runes and mastery are new, because nothing stored has them.
+
+// This split's ranked record, on the ladder the game is read against.
+//
+// A rate only appears for your own account, because that is the only one the
+// client reports losses for — everyone else comes back with a real win count
+// and a flat zero, which would read as a 100% win rate for the whole lobby.
+// Their win count is still worth showing; the rate it cannot support is not.
+function liveWinRate(r) {
+  const w = r.win_rate;
+  if (!w) return '<span class="muted">—</span>';
+  if (!w.complete) {
+    return `<span title="${esc(w.queue_title)} — the client reports wins for other` +
+           ` players but never losses, so no win rate can be worked out">` +
+           `${w.wins}W <span class="lp">this split</span></span>`;
+  }
+  return `<span title="${esc(w.queue_title)} — this split">` +
+         `${w.wins}W ${w.losses}L <span class="lp">${num(w.rate, 1)}%</span></span>`;
+}
+
+// Keystone and secondary tree. All that exists for other players — a full rune
+// page is not published by any API — so this is the ceiling, not a first pass.
+function runesCell(r) {
+  if (r.classic_runes) return classicRunesCell(r);
+  const k = r.runes;
+  if (!k) return '<span class="muted">—</span>';
+  const keystone = k.keystone_name || assetNames.perks[k.keystone_id];
+  const tree = k.secondary_style_name || assetNames.perkstyles[k.secondary_style_id];
+  const title = [keystone, tree].filter(Boolean).join(" + ");
+  return `<span class="runes" title="${esc(title)}">` +
+         icon("perk", k.keystone_id, "rune", keystone) +
+         icon("perkstyle", k.secondary_style_id, "runetree", tree) + "</span>";
+}
+
+// League Classic's page is the old one: nine marks, nine seals, nine glyphs and
+// three quintessences. Almost always nine of a kind, so identical runes arrive
+// already grouped with a count and only the commonest of each colour is drawn —
+// the full page goes in the tooltip.
+const CLASSIC_SLOTS = [["marks", "Marks"], ["seals", "Seals"],
+                       ["glyphs", "Glyphs"], ["quints", "Quints"]];
+
+function classicRunesCell(r) {
+  const page = r.classic_runes;
+  const label = (entry) =>
+    `${entry.count}× ${entry.name || assetNames.jaderunes[entry.id] || entry.id}`;
+  const full = CLASSIC_SLOTS
+    .map(([key, name]) => {
+      const list = page[key] || [];
+      return list.length ? `${name}: ${list.map(label).join(", ")}` : "";
+    })
+    .filter(Boolean).join("\n");
+
+  const art = CLASSIC_SLOTS.map(([key]) => {
+    const top = (page[key] || [])[0];
+    if (!top) return "";
+    return icon("jaderune", top.id, "rune",
+                top.name || assetNames.jaderunes[top.id]);
+  }).join("");
+
+  const title = (page.page_name ? `Rune page "${page.page_name}"\n` : "") + full;
+  const mast = r.masteries;
+  const note = mast
+    ? `<span class="tag">${esc(mast.page_name || "Masteries")} · ${mast.points} pts</span>`
+    : "";
+  return `<div class="mastery"><span class="runes" title="${esc(title)}">${art}</span>${note}</div>`;
+}
+
+// Mastery on the champion being played, with their most-played underneath —
+// the second is often the better read on a name you do not recognise.
+function masteryCell(r) {
+  const m = r.mastery;
+  const main = m
+    ? `<b>${esc(m.level)}</b> <span class="lp">${Number(m.points || 0).toLocaleString()}</span>`
+    : '<span class="muted">—</span>';
+  const top = (r.top_mastery || [])
+    .map(t => `${t.champion_name || t.champion_id} ${Math.round((t.points || 0) / 1000)}k`)
+    .join(" · ");
+  return `<div class="mastery">${main}` +
+         (top ? `<span class="tag" title="highest mastery">${esc(top)}</span>` : "") + "</div>";
 }
 
 function lpCell(r) {
@@ -456,6 +558,25 @@ function table(cols, rows, opts = {}) {
 }
 
 const COLS = {
+  live: [
+    { key: "champion_name", label: "Champion", render: championCell },
+    { key: "name", label: "Player", render: r =>
+        esc(r.name) + (r.tagline ? `<span class="tag">#${esc(r.tagline)}</span>` : "") },
+    // Sorted on the numeric ladder position, not the tier text, which would put
+    // Bronze above Diamond. Rendered by the same helper the Matches tab uses.
+    { key: "rank_pos", label: "Rank", render: rankLadders },
+    // "Record" rather than "Win rate": a rate is only available for your own
+    // account, so a column promising one would be empty for nine players in ten.
+    { key: "wr", label: "Record", num: true, render: liveWinRate },
+    { key: "wr", label: "", render: r =>
+        (r.win_rate && r.win_rate.complete ? wrBar(r.win_rate.rate) : "") },
+    { key: "runes", label: "Runes", render: runesCell },
+    { key: "mastery_points", label: "Mastery", render: masteryCell },
+    { key: "kills", label: "K / D / A", num: true, render: r =>
+        r.scores ? `${r.scores.kills}/${r.scores.deaths}/${r.scores.assists}` : "—" },
+    { key: "cs", label: "CS", num: true, render: r => (r.scores ? r.scores.cs : "—") },
+    { key: "item0", label: "Build", render: buildCell },
+  ],
   matches: [
     { key: "game_creation_ms", label: "When", render: r => when(r.game_creation_ms) },
     { key: "queue_name", label: "Mode", render: r => `<span class="pill">${esc(r.queue_name || r.game_mode || "?")}</span>` },
@@ -538,6 +659,61 @@ function matchDetail(r, key) {
     </td></tr>`;
 }
 
+// Flattened so the columns can sort: the table sorts on plain values, and rank,
+// win rate and mastery all arrive as nested objects. Missing values sort below
+// everyone rather than alongside a genuine zero.
+function liveRow(p) {
+  const primary = (p.ranks || []).find(r => r.is_game_ladder) || (p.ranks || [])[0];
+  return {
+    ...p,
+    rank_pos: primary ? ladderPosition(primary.tier, primary.division) : -1,
+    // Sorted on wins, not rate: only your own row has a rate, so sorting by it
+    // would leave the other nine tied.
+    wr: p.win_rate ? p.win_rate.wins : -1,
+    mastery_points: p.mastery ? p.mastery.points : -1,
+    kills: p.scores ? p.scores.kills : -1,
+    cs: p.scores ? p.scores.cs : -1,
+  };
+}
+
+function liveView(snap) {
+  if (!snap.live) {
+    return `<div class="empty">${esc(snap.reason || "No game in progress.")}</div>`;
+  }
+  const secs = snap.game_time_s || 0;
+  const clock = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+  // Several different reasons the Runes column can be sparse, and they mean
+  // different things — an unexplained gap reads as broken whichever it is.
+  const players = snap.players || [];
+  const classic = players.some(p => p.classic_runes);
+  let note = "";
+  if (!snap.ingame) {
+    note = `The game is not answering on its local port, so runes and live scores are
+      unavailable. Players, ranks, records and mastery are all current.`;
+  } else if (classic) {
+    // Classic uses the old marks/seals/glyphs page, which lives on your own
+    // account loadout and is published for nobody else.
+    note = `This mode uses the old rune and mastery pages. The client only publishes
+      yours, so the other nine players' pages cannot be shown.`;
+  } else if (players.length && !players.some(p => p.runes)) {
+    note = `The game has not reported runes for this match.`;
+  }
+
+  const head = `<div class="livehdr">
+    <b>${esc(snap.queue_name || snap.game_mode || "Game")}</b>
+    ${secs ? `<span class="pill">${clock}</span>` : ""}
+    ${snap.is_ranked ? '<span class="pill">Ranked</span>' : ""}
+  </div>` + (note ? `<div class="livenote muted">${note}</div>` : "");
+
+  const side = (id, label, cls) => {
+    const rows = (snap.players || []).filter(p => p.team_id === id).map(liveRow);
+    if (!rows.length) return "";
+    return `<div class="liveteam"><b class="side ${cls}">${label}</b>` +
+           table(COLS.live, rows) + "</div>";
+  };
+  return head + side(100, "Team Blue", "blue") + side(200, "Team Red", "red");
+}
+
 // Which match rows are open, by game id, so a refresh does not collapse them.
 const expanded = new Set();
 
@@ -550,7 +726,13 @@ async function render({ silent = false } = {}) {
   if (!silent) view.innerHTML = '<div class="empty">Loading…</div>';
   const scrollY = window.scrollY;
 
-  if (current === "matches") {
+  if (current === "live") {
+    // Deliberately not through api(): the account and date filters scope stored
+    // history, and the game being played belongs to whoever is logged in.
+    const snap = await fetch("/api/live").then(r => r.json()).catch(() => null);
+    view.innerHTML = snap ? liveView(snap)
+                          : '<div class="empty">Could not reach the app.</div>';
+  } else if (current === "matches") {
     const rows = await api("matches?limit=300");
     view.innerHTML = table(COLS.matches, rows, {
       detail: matchDetail,
@@ -770,8 +952,13 @@ async function refreshFilters() {
 }
 
 const REFRESH_MS = 30000;
+// A game moves faster than the page's ordinary half-minute pace, and the live
+// snapshot is cheap — the expensive half (names, ranks, mastery) is built once
+// per game on the server and reused, so a poll is one request to the game.
+const LIVE_REFRESH_MS = 3000;
 let lastRefresh = null;
 let refreshing = false;
+let livePolling = false;
 
 function paintUpdated() {
   if (!lastRefresh) return;
@@ -805,10 +992,28 @@ async function refreshAll({ silent = true } = {}) {
   }
 }
 
+// Only the live tab, and only while it is the one being looked at. Guarded
+// against both the ordinary refresh and its own previous tick, so a slow
+// snapshot cannot stack requests on top of each other.
+async function pollLive() {
+  if (current !== "live" || document.hidden || refreshing || livePolling) return;
+  livePolling = true;
+  try {
+    await render({ silent: true });
+  } catch (err) {
+    console.error(err);
+  } finally {
+    livePolling = false;
+  }
+}
+
 async function boot() {
   // Tooltip text for the build icons. Failing is survivable — the icons still
   // render, they just stop naming themselves on hover.
-  assetNames = await fetch("/api/assets").then(r => r.json()).catch(() => assetNames);
+  // Merged rather than replaced, so every map the page reads from still exists
+  // if an older cache is missing one of them.
+  assetNames = await fetch("/api/assets").then(r => r.json())
+    .then(names => ({ ...assetNames, ...names })).catch(() => assetNames);
 
   await refreshAccounts();
   await refreshFilters();
@@ -850,6 +1055,7 @@ async function boot() {
   // Skipped while the window is hidden in the tray — there is nobody to show it
   // to, and it would keep waking the database for no reason.
   setInterval(() => { if (!document.hidden) refreshAll(); }, REFRESH_MS);
+  setInterval(pollLive, LIVE_REFRESH_MS);
   setInterval(paintUpdated, 5000);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) refreshAll();

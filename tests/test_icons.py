@@ -184,7 +184,10 @@ class TestThePageWithoutIcons:
 
     def test_asset_names_endpoint_survives_an_empty_cache(self, client):
         body = client.get("/api/assets").get_json()
-        assert body == {"items": {}, "spells": {}}
+        # Every map the page reads must be present even with nothing cached, so
+        # a lookup against one is a miss rather than a crash.
+        assert body == {"items": {}, "spells": {}, "perks": {}, "perkstyles": {},
+                        "jaderunes": {}}
 
     def test_the_account_carries_its_icon_id(self, client):
         account = client.get("/api/summary").get_json()["account"]

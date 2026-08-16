@@ -31,6 +31,20 @@ QUEUES_ENDPOINT = "/lol-game-queues/v1/queues"
 ITEMS_ASSET = "/lol-game-data/assets/v1/items.json"
 SPELLS_ASSET = "/lol-game-data/assets/v1/summoner-spells.json"
 
+# Runes, for the live match tab. Two files because they are two different
+# things: a perk is one rune (Electrocute), a style is a whole tree (Domination).
+# Both are cached for their `iconPath` as much as their names — the live tab
+# shows a keystone and a secondary tree as pictures.
+PERKS_ASSET = "/lol-game-data/assets/v1/perks.json"
+PERKSTYLES_ASSET = "/lol-game-data/assets/v1/perkstyles.json"
+
+# League Classic's runes, which are the *old* system — marks, seals, glyphs and
+# quintessences rather than a keystone and two trees. Nothing about it overlaps
+# with `perks.json`: different ids, different shape, its own file. A Classic
+# game reports no modern perks at all, so without this its runes look absent
+# rather than merely different.
+JADE_PERKS_ASSET = "/lol-game-data/assets/v1/jade-perks.json"
+
 # Arena-style augments live in cherry-augments.json. Mayhem reuses the augment
 # system, and may or may not ship its own file — every candidate that 404s is
 # skipped, so listing a plausible one costs nothing and catches it if it exists.
@@ -105,7 +119,7 @@ def _as_records(payload: Any) -> list[dict]:
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, dict)]
     if isinstance(payload, dict):
-        for key in ("augments", "data", "items", "queues"):
+        for key in ("augments", "data", "items", "queues", "styles"):
             value = payload.get(key)
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, dict)]
@@ -152,7 +166,13 @@ def refresh(client: LcuClient) -> None:
     if queues is not None:
         _write_cache("queues", queues)
 
-    for name, asset in (("items", ITEMS_ASSET), ("spells", SPELLS_ASSET)):
+    for name, asset in (
+        ("items", ITEMS_ASSET),
+        ("spells", SPELLS_ASSET),
+        ("perks", PERKS_ASSET),
+        ("perkstyles", PERKSTYLES_ASSET),
+        ("jaderunes", JADE_PERKS_ASSET),
+    ):
         payload = client.get_json_or_none(asset)
         if payload is not None:
             _write_cache(name, payload)
@@ -173,7 +193,10 @@ def load(client: LcuClient | None = None) -> StaticData:
     if client is not None:
         stale = not all(
             _cache_is_fresh(name)
-            for name in ("champions", "queues", "augments", "items", "spells")
+            for name in (
+                "champions", "queues", "augments", "items", "spells",
+                "perks", "perkstyles", "jaderunes",
+            )
         )
         if stale:
             try:

@@ -1,4 +1,4 @@
-"""Command line entry point: doctor | probe | backfill | watch | serve | stats."""
+"""Command line entry point: doctor | probe | live | backfill | watch | serve | stats."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import sys
 from datetime import datetime
 
 from . import backfill as backfill_mod
-from . import config, health, icons, probe, ranked, static_data, store
+from . import config, health, icons, live, probe, ranked, static_data, store
 from .client import connect
 from .connection import ClientUnavailable, installed_league_dirs, read_lockfile
 
@@ -99,6 +99,98 @@ def cmd_probe(args: argparse.Namespace) -> int:
     with client:
         probe.run(client)
     return 0
+
+
+def cmd_live(args: argparse.Namespace) -> int:
+    """Print the current game, for checking the live view without the window.
+
+    Also the way to confirm the in-game API is reachable: that port only
+    listens while a game is actually running, so it cannot be tested from the
+    client alone.
+    """
+    snapshot = live.snapshot()
+    if args.json:
+        print(json.dumps(snapshot, indent=2, ensure_ascii=False))
+        return 0 if snapshot["live"] else 1
+
+    if not snapshot["live"]:
+        print(snapshot["reason"])
+        return 1
+
+    mode = snapshot["queue_name"] or snapshot["game_mode"] or "unknown mode"
+    clock = snapshot["game_time_s"]
+    print(f"{mode} - {clock // 60}:{clock % 60:02d} elapsed")
+    if not snapshot["ingame"]:
+        print(
+            "The in-game API did not answer, so runes and live scores are missing.\n"
+            "Everything else here came from the client."
+        )
+
+    for team_id, side in ((100, "Blue"), (200, "Red")):
+        print(f"\n{side} team")
+        for player in snapshot["players"]:
+            if player["team_id"] != team_id:
+                continue
+            _print_live_player(player)
+    return 0
+
+
+def _print_live_player(player: dict) -> None:
+    name = player["name"] + (f"#{player['tagline']}" if player["tagline"] else "")
+    print(f"  {player['champion_name'] or '?':<14} {name}")
+
+    ranks = "  ".join(
+        f"{r['queue_label']} {(r['tier'] or '').title()} {r['division'] or ''}".strip()
+        + (f" {r['league_points']} LP" if r["league_points"] is not None else "")
+        for r in player["ranks"]
+    )
+    rate = player["win_rate"]
+    if not rate:
+        record = "no ranked games this split"
+    elif rate["complete"]:
+        record = f"{rate['wins']}W {rate['losses']}L ({rate['rate']}% on {rate['queue_title']})"
+    else:
+        # Losses are only published for the logged-in account.
+        record = f"{rate['wins']}W on {rate['queue_title']} (losses not published)"
+    print(f"      {ranks or 'Unranked'}  |  {record}")
+
+    mastery = player["mastery"]
+    if mastery:
+        print(f"      mastery {mastery['level']} on this champion, {mastery['points']:,} pts")
+    top = ", ".join(
+        f"{m['champion_name'] or m['champion_id']} ({m['points']:,})"
+        for m in player["top_mastery"]
+    )
+    if top:
+        print(f"      most played: {top}")
+
+    runes = player.get("runes")
+    if runes:
+        print(
+            f"      runes: {runes['keystone_name'] or runes['keystone_id']}"
+            f" ({runes['primary_style_name']} / {runes['secondary_style_name']})"
+        )
+
+    # League Classic's old page, which only ever exists for your own account.
+    classic = player.get("classic_runes")
+    if classic:
+        print(f"      rune page {classic['page_name'] or ''}".rstrip())
+        for key, label in (("marks", "marks"), ("seals", "seals"),
+                           ("glyphs", "glyphs"), ("quints", "quints")):
+            entries = classic.get(key) or []
+            if entries:
+                shown = ", ".join(f"{e['count']}x {e['name'] or e['id']}" for e in entries)
+                print(f"        {label:<7} {shown}")
+    masteries = player.get("masteries")
+    if masteries:
+        print(f"      masteries: {masteries['page_name'] or 'page'}"
+              f" - {masteries['points']} points")
+    scores = player.get("scores")
+    if scores:
+        print(
+            f"      {scores['kills']}/{scores['deaths']}/{scores['assists']}"
+            f"  {scores['cs']} CS"
+        )
 
 
 def cmd_backfill(args: argparse.Namespace) -> int:
@@ -553,6 +645,10 @@ def build_parser() -> argparse.ArgumentParser:
         func=cmd_probe
     )
 
+    p_live = sub.add_parser("live", help="show the match being played right now")
+    p_live.add_argument("--json", action="store_true", help="print the raw snapshot")
+    p_live.set_defaults(func=cmd_live)
+
     p_backfill = sub.add_parser("backfill", help="import recent games from the client's history")
     p_backfill.add_argument("--max", type=int, default=200, help="most games to walk (default 200)")
     p_backfill.add_argument(
@@ -619,8 +715,24 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _survive_unprintable_names() -> None:
+    """Stop a name the console cannot render from killing the command.
+
+    Riot IDs are free-form Unicode and the Windows console still defaults to a
+    legacy code page, so printing a lobby is enough to raise
+    UnicodeEncodeError — the live view fell over on a Japanese name. Replacing
+    the character loses a glyph; not replacing it loses the whole command.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, OSError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    _survive_unprintable_names()
     _setup_logging(args.verbose)
     return args.func(args)
 

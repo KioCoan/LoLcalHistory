@@ -120,6 +120,49 @@ Icons are optional throughout. Until the watcher has run once there are none, an
 one that is missing simply leaves the name it sat beside — the layout does not depend on
 the picture arriving.
 
+## The live match
+
+The **Live** tab shows the game you are in right now: both teams, every player's rank on
+each ladder they play, their champion and mastery on it, their three most-played
+champions, their runes, and their K/D/A, CS and build as the game goes on. It refreshes
+every three seconds while you are looking at it, and not at all while you are not.
+
+Nothing here is stored. Close the app mid-game and there is nothing to lose — the tab is
+assembled fresh from the client each time you open it, which is also why it needs no
+migration and cannot corrupt anything.
+
+It is built from two sources. The client owns the roster, because it is the only one that
+reports puuids, and a puuid is what every rank and mastery lookup is keyed by. The game
+itself, on its own local port, owns everything that changes while you play. They are
+joined on Riot ID. The expensive half — names, ranks, mastery, about thirty requests — is
+built once per game and reused, because none of it changes mid-match; only the game's own
+feed is re-read on each refresh.
+
+Three limits, all of them the client's rather than choices made here:
+
+- **Win rates exist only for your own account.** The client reports `wins` for anyone in
+  the lobby but reports `losses` only for you — everyone else comes back with a real win
+  count and a flat zero. Believing that would give every stranger in the game a 100% win
+  rate, so their win count is shown alone and no rate is claimed for it.
+- **Runes are the keystone and the two trees, and no more.** A full rune page is not
+  published for other players by any API.
+- **The tab is empty until the game actually starts.** Champion select is not covered.
+
+**League Classic is its own case.** It runs the *old* systems — a rune page of marks,
+seals, glyphs and quintessences, and a mastery page of thirty points — and reports nothing
+through the modern rune fields, which are empty for every player in a Classic game. Those
+pages live on the account loadout instead, so the tab shows yours in full: every rune with
+its name and icon, and the mastery page with its point total. It is account-scoped, so the
+other nine players' pages cannot be read at all, and the tab says so. Individual Classic
+masteries have no name anywhere in the client's assets, so the mastery page is shown by
+name and point count rather than rune by rune.
+
+If the game's local port is not answering, ranks, records, champions and mastery still
+fill in from the client; only runes and live scores go missing, and the tab says which.
+
+`lolhist live` prints the same thing in the terminal, which is the quickest way to check
+the in-game half is reachable — that port only exists while a game is running.
+
 ## More than one account
 
 The database holds every account you sign in with, and attributes each stat to the one
@@ -199,7 +242,8 @@ Fetch ranks for everyone you have played with:
 .venv/Scripts/python.exe -m lolhist ranks
 ```
 
-Other commands: `lolhist stats` for a quick terminal summary, `lolhist probe` to dump raw
+Other commands: `lolhist live` to print the match in progress (`--json` for the raw
+snapshot), `lolhist stats` for a quick terminal summary, `lolhist probe` to dump raw
 client payloads to the `samples/` folder when something needs diagnosing, and
 `lolhist resolve-names` to rebuild champion, queue and augment names from the stored ids
 — useful after a patch adds augments your cached assets did not know about.
