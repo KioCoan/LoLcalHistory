@@ -108,9 +108,14 @@ def declarations(prop):
 
 
 def relative(value):
-    """Nothing absolute, and nothing that resolves to a fixed number of pixels."""
+    """Nothing absolute, and nothing that resolves to a fixed number of pixels.
+
+    The intrinsic keywords count as relative: a box sized to its own content
+    grows with the text inside it, which is the whole point.
+    """
     return bool(re.match(r"^[\d.]+rem$", value)) or value in {
         "inherit", "100%", "auto", "0", "50%",
+        "max-content", "min-content", "fit-content",
     }
 
 

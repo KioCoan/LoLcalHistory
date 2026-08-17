@@ -132,7 +132,11 @@ slots are drawn rather than skipped, so a four-item game cannot be mistaken for 
 six-item one.
 
 Clicking a row expands it into a scoreboard: both teams with their portraits, builds,
-K/D/A and rank on whichever ladder the mode uses, plus your augments for the game.
+K/D/A and rank on whichever ladder the mode uses, plus your augments for the game. The two
+teams meet at a rule down the middle, blue aligned to its right edge and red to its left.
+Each list is only as wide as its widest player, so a build sits beside the name it belongs
+to rather than out at the far edge of the row — while still lining up with the builds above
+and below it.
 
 Icons are optional throughout. Until the watcher has run once there are none, and every
 one that is missing simply leaves the name it sat beside — the layout does not depend on

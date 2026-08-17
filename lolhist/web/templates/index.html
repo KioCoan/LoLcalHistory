@@ -168,8 +168,24 @@
   .wrbar > i { position: absolute; inset: 0 auto 0 0; border-radius: 0.1875rem; background: var(--win); }
   .expand { cursor: pointer; }
   .detail td { white-space: normal; background: var(--panel-2); }
-  .teams { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-  .teams ul { list-style: none; margin: 0; padding: 0; }
+  /* The two teams meet at a rule down the middle: blue aligned to its right
+     edge, red to its left, both facing the line. Left to their own devices
+     each list was stretched across half the row, which put a player's build a
+     third of a screen away from their name. */
+  .teams { display: grid; grid-template-columns: 1fr 1fr; column-gap: 2.5rem;
+           position: relative; }
+  /* Inset top and bottom so it reads as a divider between two lists rather
+     than a border drawn on the row. Only when there are two lists to divide —
+     a mode whose teams are not 100 and 200 leaves both sides empty, and a rule
+     down the middle of nothing is just a stray mark. */
+  .teams.split::before { content: ""; position: absolute; left: 50%;
+                         top: 1rem; bottom: 1rem; border-left: 1px solid var(--line); }
+  .teams .team { display: flex; flex-direction: column; min-width: 0; }
+  .teams .team.blue { align-items: flex-end; }
+  /* Wide enough for the widest row in the team and no wider. The rows inside
+     still stretch to that width, so the builds stay in a column — it is the
+     column that moves, not the alignment that goes. */
+  .teams ul { list-style: none; margin: 0; padding: 0; width: max-content; max-width: 100%; }
   .teams li { padding: 0.1875rem 0; color: var(--muted); font-size: 0.75rem; }
   .teams li b { color: var(--text); font-weight: 500; }
   /* 100 and 200 are the ids the client uses; blue and red are what the game
@@ -667,11 +683,14 @@ function matchDetail(r, key) {
   const side = (id) => (r.team || []).filter(p => p.team_id === id).map(playerLine).join("");
   const augs = (r.augments || []).filter(Boolean);
   const anyApprox = (r.team || []).some(p => (p.ranks || []).some(x => !x.rank_at_match));
+  const blue = side(100), red = side(200);
+  // The divider is only earned when there is something on both sides of it.
+  const split = blue && red ? " split" : "";
   return `<tr class="detail" data-detail="${esc(key)}" hidden><td colspan="12">
     ${augs.length ? `<div class="augs"><b>Augments:</b> ${augs.map(a => `<span class="pill">${esc(a)}</span>`).join(" ")}</div>` : ""}
-    <div class="teams" style="margin-top:0.375rem">
-      <div><b class="side blue">Team Blue</b><ul>${side(100)}</ul></div>
-      <div><b class="side red">Team Red</b><ul>${side(200)}</ul></div>
+    <div class="teams${split}" style="margin-top:0.375rem">
+      <div class="team blue"><b class="side blue">Team Blue</b><ul>${blue}</ul></div>
+      <div class="team red"><b class="side red">Team Red</b><ul>${red}</ul></div>
     </div>
     ${anyApprox ? '<div class="muted" style="margin-top:0.5rem">* current rank — this game predates rank capture, and nothing can say now what someone was ranked at the time.</div>' : ""}
     </td></tr>`;
