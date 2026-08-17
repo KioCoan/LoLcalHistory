@@ -15,7 +15,23 @@
     --text: #e6e8ee; --muted: #939bad; --accent: #5b9dd9;
     --win: #46a758; --loss: #d4484b;
     --team-blue: #5b9dd9; --team-red: #e0696d;
-    --radius: 10px;
+    --radius: 0.625rem;
+
+    /* Every length below is in rem and this is the only dial. Widening the
+       window enlarges type, icons, padding and the content column together,
+       which is what "maximise it" is really asking for. Nothing here asks
+       whether the window *is* maximised, so a window merely dragged wide — or
+       a browser tab, which has no such state — is treated the same way.
+
+       Two straight lines through two points each: 16px at the window's default
+       1280x860, 21px maximised on a 3440x1440 ultrawide. The smaller wins,
+       because a window pulled wide but left short has no room for the type its
+       width alone would ask for. Clamped at both ends, past which the lines
+       stop meaning anything. vw and vh are CSS pixels, so Windows display
+       scaling is already folded in. */
+    --scale-w: calc(0.2315vw + 13.04px);
+    --scale-h: calc(0.862vh + 8.59px);
+    font-size: clamp(15px, min(var(--scale-w), var(--scale-h)), 21px);
   }
   :root[data-theme="light"] {
     color-scheme: light;
@@ -26,55 +42,57 @@
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif;
+    font: 0.875rem/1.5 "Segoe UI", system-ui, -apple-system, sans-serif;
   }
-  .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 20px 64px; }
-  h1 { font-size: 20px; margin: 0; font-weight: 600; }
+  /* Capped in rem, not pixels, so the column widens with the type instead of
+     leaving a narrow page marooned in the middle of a big screen. */
+  .wrap { max-width: 100rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
+  h1 { font-size: 1.25rem; margin: 0; font-weight: 600; }
 
   /* Every icon is served from a local mirror of the client's own art. When one
      has not been copied yet the <img> is removed and the text stands alone, so
      the layout never depends on the picture arriving. */
-  .hdr { display: flex; align-items: center; gap: 11px; margin-bottom: 20px; }
+  .hdr { display: flex; align-items: center; gap: 0.6875rem; margin-bottom: 1.25rem; }
   /* Pushed to the far end of the header, opposite the account. */
   #theme { margin-left: auto; flex: none; display: inline-flex; align-items: center;
-           justify-content: center; width: 34px; height: 34px; padding: 0; cursor: pointer;
+           justify-content: center; width: 2.125rem; height: 2.125rem; padding: 0; cursor: pointer;
            background: var(--panel); color: var(--muted);
-           border: 1px solid var(--line); border-radius: 8px; }
+           border: 1px solid var(--line); border-radius: 0.5rem; }
   #theme:hover { background: var(--panel-2); color: var(--text); }
-  #theme svg { width: 17px; height: 17px; display: block; }
-  .pfp { width: 42px; height: 42px; border-radius: 50%; flex: none;
+  #theme svg { width: 1.0625rem; height: 1.0625rem; display: block; }
+  .pfp { width: 2.625rem; height: 2.625rem; border-radius: 50%; flex: none;
          border: 1px solid var(--line); background: var(--panel-2); }
-  .champ { width: 24px; height: 24px; border-radius: 5px; flex: none;
+  .champ { width: 1.5rem; height: 1.5rem; border-radius: 0.3125rem; flex: none;
            background: var(--panel-2); }
-  .champcell { display: flex; align-items: center; gap: 8px; }
-  .build { display: inline-flex; gap: 2px; align-items: center; }
+  .champcell { display: flex; align-items: center; gap: 0.5rem; }
+  .build { display: inline-flex; gap: 0.125rem; align-items: center; }
   /* The box is the slot, the image only fills it. An icon that has not been
      mirrored yet removes itself and leaves the empty box, so a five-item build
      never reads as a four-item one. */
-  .build .slot { display: inline-block; width: 21px; height: 21px; flex: none;
-                 border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line); }
-  .build .slot img { width: 100%; height: 100%; display: block; border-radius: 3px; }
+  .build .slot { display: inline-block; width: 1.3125rem; height: 1.3125rem; flex: none;
+                 border-radius: 0.25rem; background: var(--panel-2); border: 1px solid var(--line); }
+  .build .slot img { width: 100%; height: 100%; display: block; border-radius: 0.1875rem; }
   /* The trinket is not part of the build proper; a gap says so. */
-  .build .trinket { margin-left: 5px; }
+  .build .trinket { margin-left: 0.3125rem; }
   /* Fixed width and never collapsed: a player whose spells the client did not
      report still holds the column open, so the builds beside them stay in line. */
-  .spells { display: inline-flex; flex-direction: column; gap: 2px; margin-right: 5px;
-            width: 15px; flex: none; }
-  .spells img { width: 15px; height: 15px; border-radius: 3px; }
-  .teams li { display: flex; align-items: flex-start; gap: 7px; }
-  .teams .champ { width: 22px; height: 22px; }
+  .spells { display: inline-flex; flex-direction: column; gap: 0.125rem; margin-right: 0.3125rem;
+            width: 0.9375rem; flex: none; }
+  .spells img { width: 0.9375rem; height: 0.9375rem; border-radius: 0.1875rem; }
+  .teams li { display: flex; align-items: flex-start; gap: 0.4375rem; }
+  .teams .champ { width: 1.375rem; height: 1.375rem; }
   .who { flex: 1 1 auto; min-width: 0; }
   /* The name line stays on one line and truncates; the ladders below it wrap. */
   .who .line { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* Every ladder a player is ranked on, side by side. */
-  .ranks { display: flex; flex-wrap: wrap; gap: 1px 11px; margin-top: 1px; }
-  .rk { white-space: nowrap; font-size: 11px; }
+  .ranks { display: flex; flex-wrap: wrap; gap: 0.0625rem 0.6875rem; margin-top: 0.0625rem; }
+  .rk { white-space: nowrap; font-size: 0.6875rem; }
   .rk em, .rk .pts { font-style: normal; color: var(--muted); }
   /* The ladder this game actually moved. Nothing is marked in a mode that
      moves none, which is most of them. */
   .rk.here em { color: var(--text); font-weight: 600; }
-  .norank { color: var(--muted); font-size: 11px; }
+  .norank { color: var(--muted); font-size: 0.6875rem; }
 
   /* Ladder colours. Spelled out per theme rather than shared: the bright tier
      colours are unreadable on white, and the dark ones vanish on black. Classic
@@ -109,95 +127,95 @@
   /* The live tab. Two tables in one panel rather than the two-column list the
      expanded match row uses: there is far more per player here, and a column
      of ranks only reads as a column if it is one. */
-  .livehdr { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 12px 0; }
-  .livenote { padding: 6px 12px 0; }
-  .liveteam > .side { display: block; padding: 14px 12px 4px; }
+  .livehdr { display: flex; align-items: center; gap: 0.625rem; flex-wrap: wrap; padding: 0.75rem 0.75rem 0; }
+  .livenote { padding: 0.375rem 0.75rem 0; }
+  .liveteam > .side { display: block; padding: 0.875rem 0.75rem 0.25rem; }
   /* The keystone is the thing you read; the secondary tree is context, so it
      sits smaller and dimmer beside it rather than competing. */
-  .runes { display: inline-flex; align-items: center; gap: 4px; }
-  .runes img.rune { width: 22px; height: 22px; border-radius: 4px; }
-  .runes img.runetree { width: 15px; height: 15px; opacity: .8; }
+  .runes { display: inline-flex; align-items: center; gap: 0.25rem; }
+  .runes img.rune { width: 1.375rem; height: 1.375rem; border-radius: 0.25rem; }
+  .runes img.runetree { width: 0.9375rem; height: 0.9375rem; opacity: .8; }
   /* Two lines, so the row keeps the height of every other row on the page. */
   .mastery { line-height: 1.35; }
   .mastery .tag { display: block; }
 
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 20px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
-  .card .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
-  .card .v { font-size: 21px; font-weight: 600; margin-top: 2px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr)); gap: 0.625rem; margin-bottom: 1.25rem; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 0.75rem 0.875rem; }
+  .card .k { color: var(--muted); font-size: 0.6875rem; text-transform: uppercase; letter-spacing: .05em; }
+  .card .v { font-size: 1.3125rem; font-weight: 600; margin-top: 0.125rem; }
 
-  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
   select { background: var(--panel); color: var(--text); border: 1px solid var(--line);
-           border-radius: 8px; padding: 7px 10px; font: inherit; }
-  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 14px; flex-wrap: wrap; }
-  .tab { padding: 8px 14px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent;
+           border-radius: 0.5rem; padding: 0.4375rem 0.625rem; font: inherit; }
+  .tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--line); margin-bottom: 0.875rem; flex-wrap: wrap; }
+  .tab { padding: 0.5rem 0.875rem; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent;
          background: none; border-top: 0; border-left: 0; border-right: 0; font: inherit; }
   .tab.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
 
   .scroll { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { padding: 9px 12px; text-align: left; white-space: nowrap; }
-  th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase;
+  table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+  th, td { padding: 0.5625rem 0.75rem; text-align: left; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 0.6875rem; text-transform: uppercase;
        letter-spacing: .04em; border-bottom: 1px solid var(--line); cursor: pointer; user-select: none; }
   tbody tr { border-top: 1px solid var(--line); }
   tbody tr:hover { background: var(--panel-2); }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .w { color: var(--win); font-weight: 600; }
   .l { color: var(--loss); font-weight: 600; }
-  .pill { display: inline-block; padding: 1px 7px; border-radius: 999px; background: var(--panel-2);
-          border: 1px solid var(--line); font-size: 11px; color: var(--muted); }
-  .wrbar { position: relative; height: 5px; border-radius: 3px; background: var(--loss); min-width: 56px; }
-  .wrbar > i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--win); }
+  .pill { display: inline-block; padding: 0.0625rem 0.4375rem; border-radius: 999px; background: var(--panel-2);
+          border: 1px solid var(--line); font-size: 0.6875rem; color: var(--muted); }
+  .wrbar { position: relative; height: 0.3125rem; border-radius: 0.1875rem; background: var(--loss); min-width: 3.5rem; }
+  .wrbar > i { position: absolute; inset: 0 auto 0 0; border-radius: 0.1875rem; background: var(--win); }
   .expand { cursor: pointer; }
   .detail td { white-space: normal; background: var(--panel-2); }
-  .teams { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .teams { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
   .teams ul { list-style: none; margin: 0; padding: 0; }
-  .teams li { padding: 3px 0; color: var(--muted); font-size: 12px; }
+  .teams li { padding: 0.1875rem 0; color: var(--muted); font-size: 0.75rem; }
   .teams li b { color: var(--text); font-weight: 500; }
   /* 100 and 200 are the ids the client uses; blue and red are what the game
      calls them and what anyone reading this actually saw on screen. */
   .teams .side { font-weight: 600; }
   .teams .side.blue { color: var(--team-blue); }
   .teams .side.red  { color: var(--team-red); }
-  .augs { margin-top: 8px; }
-  .augs .pill { margin: 0 4px 4px 0; color: var(--text); }
-  .empty { padding: 28px; text-align: center; color: var(--muted); }
+  .augs { margin-top: 0.5rem; }
+  .augs .pill { margin: 0 0.25rem 0.25rem 0; color: var(--text); }
+  .empty { padding: 1.75rem; text-align: center; color: var(--muted); }
   .alert { border: 1px solid var(--loss); border-left-width: 4px; border-radius: var(--radius);
            background: color-mix(in srgb, var(--loss) 12%, transparent);
-           padding: 12px 14px; margin-bottom: 16px; }
-  .alert h3 { margin: 0 0 4px; font-size: 14px; color: var(--loss); }
-  .alert p { margin: 2px 0; font-size: 12.5px; color: var(--text); }
-  .alert code { font-size: 12px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
-  .ok-note { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
-  .foot { margin-top: 18px; color: var(--muted); font-size: 12px; }
+           padding: 0.75rem 0.875rem; margin-bottom: 1rem; }
+  .alert h3 { margin: 0 0 0.25rem; font-size: 0.875rem; color: var(--loss); }
+  .alert p { margin: 0.125rem 0; font-size: 0.78125rem; color: var(--text); }
+  .alert code { font-size: 0.75rem; background: var(--panel-2); padding: 0.0625rem 0.3125rem; border-radius: 0.25rem; }
+  .ok-note { color: var(--muted); font-size: 0.75rem; margin-bottom: 0.875rem; }
+  .foot { margin-top: 1.125rem; color: var(--muted); font-size: 0.75rem; }
 
-  .update { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  .update { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
             border: 1px solid var(--accent); border-left-width: 4px; border-radius: var(--radius);
             background: color-mix(in srgb, var(--accent) 12%, transparent);
-            padding: 11px 14px; margin-bottom: 16px; font-size: 13px; }
+            padding: 0.6875rem 0.875rem; margin-bottom: 1rem; font-size: 0.8125rem; }
   .update b { font-weight: 600; }
   .update .grow { flex: 1 1 auto; }
   .update a { color: var(--accent); }
-  .update button { background: var(--accent); color: #fff; border: 0; border-radius: 8px;
-                   padding: 7px 14px; font: inherit; font-weight: 600; cursor: pointer; }
+  .update button { background: var(--accent); color: #fff; border: 0; border-radius: 0.5rem;
+                   padding: 0.4375rem 0.875rem; font: inherit; font-weight: 600; cursor: pointer; }
   .update button:hover { filter: brightness(1.08); }
   .update button:disabled { opacity: .6; cursor: default; }
-  .update .bar { height: 4px; border-radius: 2px; background: var(--panel-2);
+  .update .bar { height: 0.25rem; border-radius: 0.125rem; background: var(--panel-2);
                  width: 100%; overflow: hidden; }
   .update .bar > i { display: block; height: 100%; background: var(--accent); transition: width .2s; }
-  .muted { color: var(--muted); font-size: 12px; }
-  .tag { color: var(--muted); font-size: 11px; }
-  .lp { color: var(--muted); font-size: 11px; margin-left: 4px; }
+  .muted { color: var(--muted); font-size: 0.75rem; }
+  .tag { color: var(--muted); font-size: 0.6875rem; }
+  .lp { color: var(--muted); font-size: 0.6875rem; margin-left: 0.25rem; }
 
   button#refresh {
-    display: inline-flex; align-items: center; gap: 7px;
+    display: inline-flex; align-items: center; gap: 0.4375rem;
     background: var(--panel); color: var(--text); border: 1px solid var(--line);
-    border-radius: 8px; padding: 7px 12px; font: inherit; cursor: pointer;
+    border-radius: 0.5rem; padding: 0.4375rem 0.75rem; font: inherit; cursor: pointer;
   }
   button#refresh:hover { background: var(--panel-2); }
   button#refresh:disabled { opacity: .6; cursor: default; }
   .spin {
-    width: 12px; height: 12px; border-radius: 50%; display: inline-block;
+    width: 0.75rem; height: 0.75rem; border-radius: 50%; display: inline-block;
     border: 2px solid var(--line); border-top-color: var(--accent);
   }
   /* Only animate while a refresh is actually running. */
@@ -206,7 +224,7 @@
   @media (prefers-reduced-motion: reduce) {
     button#refresh.busy .spin { animation: none; border-top-color: var(--text); }
   }
-  .updated { color: var(--muted); font-size: 12px; }
+  .updated { color: var(--muted); font-size: 0.75rem; }
 </style>
 <script>
 // Runs before the body renders, so the window never flashes the wrong theme on
@@ -651,11 +669,11 @@ function matchDetail(r, key) {
   const anyApprox = (r.team || []).some(p => (p.ranks || []).some(x => !x.rank_at_match));
   return `<tr class="detail" data-detail="${esc(key)}" hidden><td colspan="12">
     ${augs.length ? `<div class="augs"><b>Augments:</b> ${augs.map(a => `<span class="pill">${esc(a)}</span>`).join(" ")}</div>` : ""}
-    <div class="teams" style="margin-top:6px">
+    <div class="teams" style="margin-top:0.375rem">
       <div><b class="side blue">Team Blue</b><ul>${side(100)}</ul></div>
       <div><b class="side red">Team Red</b><ul>${side(200)}</ul></div>
     </div>
-    ${anyApprox ? '<div class="muted" style="margin-top:8px">* current rank — this game predates rank capture, and nothing can say now what someone was ranked at the time.</div>' : ""}
+    ${anyApprox ? '<div class="muted" style="margin-top:0.5rem">* current rank — this game predates rank capture, and nothing can say now what someone was ranked at the time.</div>' : ""}
     </td></tr>`;
 }
 

@@ -104,6 +104,16 @@ the position is dropped and the window is centred, rather than opening somewhere
 cannot see it. Nothing is ever restored minimised, since that looks exactly like the app
 failing to start.
 
+**The page grows with the window.** Maximise it and the text, icons, padding and the
+content column all get larger together, rather than leaving a narrow strip of small type
+in the middle of a big screen. The whole stylesheet is written in `rem` and hung off a
+single root font size, which runs from 15px in the smallest allowed window to 21px
+maximised on a 3440×1440 ultrawide. It follows whichever of the window's width and height
+has less room — a window dragged wide but left short has nowhere to put type its width
+alone would ask for — and since it reads the viewport rather than any maximised flag, a
+window merely dragged larger is treated the same way. Windows display scaling is already
+folded in, so 150% does not compound.
+
 **Launching it twice** does not start a second copy — two watchers on one database would
 both record every game and contend over the same rows. The second launch raises the
 window of the one already running, which is what you wanted anyway if it was sitting in
