@@ -73,6 +73,71 @@ _ADDED_COLUMNS = {
 }
 
 
+# Bumped when a release has to correct data an earlier one wrote. Kept in the
+# database's own user_version so the work happens once per database rather than
+# on every launch.
+_REPAIR_VERSION = 1
+
+
+def _repair(conn: sqlite3.Connection) -> None:
+    """One-off corrections to data already on disk. Runs after the schema."""
+    if conn.execute("PRAGMA user_version").fetchone()[0] >= _REPAIR_VERSION:
+        return
+    changed = _repair_lp_deltas(conn)
+    if changed:
+        log.info("recomputed %d LP change%s", changed, "" if changed == 1 else "s")
+    conn.execute(f"PRAGMA user_version = {_REPAIR_VERSION}")
+
+
+def _repair_lp_deltas(conn: sqlite3.Connection) -> int:
+    """Redo LP changes that were settled against the wrong ladder.
+
+    Both ladders used to share one list of tiers, so a Classic promotion was
+    charged for tiers that ladder does not have: Wood I to Silver IV came out
+    as +842 for a game that gained 42.
+
+    Redoing them invents nothing. An LP change is never reported by the client
+    — it is always the difference between two rank observations, and both of
+    those are still on record. A game whose rank was bracketed at the time is
+    recomputed from the ranks stored beside it; one derived from the snapshot
+    chain is set back to nothing and handed to the deriver below, which walks
+    that chain again with the ladder corrected.
+    """
+    from . import ranked
+
+    rows = conn.execute(
+        """
+        SELECT game_id, platform_id, my_rank_queue, my_lp_delta,
+               my_tier_before, my_division_before, my_lp_before,
+               my_tier_after,  my_division_after,  my_lp_after
+        FROM matches
+        WHERE my_lp_delta IS NOT NULL AND my_rank_queue IS NOT NULL
+        """
+    ).fetchall()
+
+    changed = 0
+    for row in rows:
+        ladder = row["my_rank_queue"]
+        delta = ranked.diff_points(
+            ranked.Rank(ladder, row["my_tier_before"], row["my_division_before"],
+                        row["my_lp_before"]),
+            ranked.Rank(ladder, row["my_tier_after"], row["my_division_after"],
+                        row["my_lp_after"]),
+        )
+        if delta == row["my_lp_delta"]:
+            continue
+        conn.execute(
+            "UPDATE matches SET my_lp_delta = ? WHERE game_id = ? AND platform_id = ?",
+            (delta, row["game_id"], row["platform_id"]),
+        )
+        changed += 1
+
+    if changed:
+        for owner in conn.execute("SELECT DISTINCT puuid FROM me").fetchall():
+            derive_lp_from_snapshots(conn, owner["puuid"])
+    return changed
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     for table, columns in _ADDED_COLUMNS.items():
         existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -232,6 +297,8 @@ def open_db(path: Path | None = None) -> sqlite3.Connection:
         # fail if they reference columns the old tables do not have yet.
         _migrate(conn)
         conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        # After the schema: the repair reads v_my_matches, which it creates.
+        _repair(conn)
         conn.commit()
     snapshot(conn, target)
     return conn

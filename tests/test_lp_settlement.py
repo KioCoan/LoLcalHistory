@@ -183,3 +183,87 @@ class TestSettlement:
         row = conn.execute("SELECT my_lp_delta, my_lp_before FROM matches").fetchone()
         assert row["my_lp_delta"] == 18
         assert row["my_lp_before"] is None
+
+
+class TestRepairingWhatTheWrongLadderRecorded:
+    """The +842 rows already written to people's databases.
+
+    An LP change is never reported by the client — it is always the difference
+    between two rank observations, and those are still on record. So a bad
+    delta is not lost data, it is a stale calculation, and the fix is to do it
+    again rather than to ask anyone to rebuild.
+    """
+
+    def stored(self, conn, game_id=1):
+        return conn.execute(
+            "SELECT my_lp_delta FROM matches WHERE game_id = ?", (game_id,)
+        ).fetchone()["my_lp_delta"]
+
+    def a_settled_promotion(self, conn, delta):
+        """The reported game, written as the old code would have written it."""
+        match = a_match()
+        store.upsert_match(conn, match)
+        store.record_rank_before(conn, match.key, CLASSIC, Rank(CLASSIC, "WOOD", "I", 80))
+        store.record_lp_change(
+            conn, match.key, CLASSIC, delta, Rank(CLASSIC, "SILVER", "IV", 22)
+        )
+        return match
+
+    def test_a_wrong_delta_is_worked_out_again(self, conn):
+        self.a_settled_promotion(conn, delta=842)
+        assert store._repair_lp_deltas(conn) == 1
+        assert self.stored(conn) == 42
+
+    def test_a_correct_delta_is_left_alone(self, conn):
+        self.a_settled_promotion(conn, delta=42)
+        assert store._repair_lp_deltas(conn) == 0, "a row that was right was rewritten"
+
+    def test_a_row_with_no_rank_before_is_handed_back_to_the_deriver(self, conn):
+        """Rows filled from the snapshot chain have an after and no before.
+
+        Nothing local can recompute those, so clearing the number is the honest
+        move: the deriver walks the chain again with the ladder corrected.
+        """
+        match = a_match()
+        store.upsert_match(conn, match)
+        store.record_lp_change(
+            conn, match.key, CLASSIC, 842, Rank(CLASSIC, "SILVER", "IV", 22)
+        )
+        assert store._repair_lp_deltas(conn) == 1
+        assert self.stored(conn) is None
+
+    def test_it_runs_once_and_not_on_every_launch(self, tmp_path):
+        """It rewrites rows, so a second unasked-for pass is worth ruling out."""
+        path = tmp_path / "once.db"
+        first = store.open_db(path)
+        assert first.execute("PRAGMA user_version").fetchone()[0] == store._REPAIR_VERSION
+        self.a_settled_promotion(first, delta=842)
+        first.close()
+
+        second = store.open_db(path)
+        assert second.execute(
+            "SELECT my_lp_delta FROM matches WHERE game_id = 1"
+        ).fetchone()["my_lp_delta"] == 842, "the repair ran a second time"
+        second.close()
+
+    def test_an_upgraded_database_is_repaired_on_the_next_open(self, tmp_path):
+        path = tmp_path / "upgrade.db"
+        old = store.open_db(path)
+        self.a_settled_promotion(old, delta=842)
+        old.execute("PRAGMA user_version = 0")     # as it was before this release
+        old.commit()
+        old.close()
+
+        upgraded = store.open_db(path)
+        assert upgraded.execute(
+            "SELECT my_lp_delta FROM matches WHERE game_id = 1"
+        ).fetchone()["my_lp_delta"] == 42
+        upgraded.close()
+
+    def test_the_solo_ladder_is_not_disturbed(self, conn):
+        match = a_match(queue_id=420, game_mode="CLASSIC")
+        store.upsert_match(conn, match)
+        store.record_rank_before(conn, match.key, SOLO, Rank(SOLO, "EMERALD", "II", 98))
+        store.record_lp_change(conn, match.key, SOLO, 14, Rank(SOLO, "EMERALD", "I", 12))
+        assert store._repair_lp_deltas(conn) == 0
+        assert self.stored(conn) == 14

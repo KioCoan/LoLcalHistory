@@ -96,8 +96,9 @@
 
   /* Ladder colours. Spelled out per theme rather than shared: the bright tier
      colours are unreadable on white, and the dark ones vanish on black. Classic
-     runs its own ladder with its own bottom tiers (Salt, Wood), so they are
-     here too. Anything unrecognised falls through to ordinary text. */
+     runs a ladder of its own — Salt and Wood beneath Silver, Legend above
+     Diamond in place of Master through Challenger — so those are here too.
+     Anything unrecognised falls through to ordinary text. */
   .r { font-weight: 600; }
   .r-salt        { color: #9fb3c0; }
   .r-wood        { color: #b08155; }
@@ -111,6 +112,7 @@
   .r-master      { color: #b473e6; }
   .r-grandmaster { color: #e6696d; }
   .r-challenger  { color: #46cfe6; }
+  .r-legend      { color: #e8b84b; }
   [data-theme="light"] .r-salt        { color: #506874; }
   [data-theme="light"] .r-wood        { color: #85603a; }
   [data-theme="light"] .r-iron        { color: #6f6763; }
@@ -123,6 +125,7 @@
   [data-theme="light"] .r-master      { color: #7a35b5; }
   [data-theme="light"] .r-grandmaster { color: #b32529; }
   [data-theme="light"] .r-challenger  { color: #15768a; }
+  [data-theme="light"] .r-legend      { color: #8a6300; }
 
   /* The live tab. Two tables in one panel rather than the two-column list the
      expanded match row uses: there is far more per player here, and a column
@@ -374,10 +377,15 @@ function rankText(p) {
   return titleCase(p.tier) + div;
 }
 
-// Ordered low to high. Classic invents its own bottom tiers, so both sets are
-// here; this mirrors ranked._TIER_ORDER.
+// Every tier on either ladder, low to high. This is only used to sort a column,
+// and a column only ever holds one ladder's ranks, so all this has to be is
+// monotonic within each of them — it is not the ladder itself, and the server
+// keeps those apart in ranked.LADDER_TIERS. Classic's tiers are Salt, Wood,
+// Silver, Gold, Platinum, Diamond, Legend; Legend is its apex and sits last
+// here because nothing on the standard ladder has to sort against it.
 const TIER_ORDER = ["SALT", "WOOD", "IRON", "BRONZE", "SILVER", "GOLD", "PLATINUM",
-                    "EMERALD", "DIAMOND", "MASTER", "GRANDMASTER", "CHALLENGER"];
+                    "EMERALD", "DIAMOND", "MASTER", "GRANDMASTER", "CHALLENGER",
+                    "LEGEND"];
 const DIVISION_ORDER = { IV: 0, III: 1, II: 2, I: 3 };
 const LADDERS = [["solo", "Solo/Duo"], ["flex", "Flex"], ["classic", "Classic"]];
 

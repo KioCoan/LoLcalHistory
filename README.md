@@ -309,7 +309,16 @@ Two separate ladders are tracked, because League Classic has its own:
 | Ladder | Client queue type | Notes |
 |---|---|---|
 | Solo/Duo | `RANKED_SOLO_5x5` | shown for ARAM, Mayhem and Summoner's Rift |
-| League Classic | `JADE_RANKED_SOLO_5x5` | its own tiers, including Salt and Wood |
+| League Classic | `JADE_RANKED_SOLO_5x5` | a ladder of its own, seven tiers deep |
+
+League Classic is not the standard ladder under different names. It runs
+
+    Salt > Wood > Silver > Gold > Platinum > Diamond > Legend
+
+with no Iron, Bronze or Emerald, and Legend in place of Master through Challenger. The two
+are kept apart deliberately: holding both in one list is what once charged a Classic
+promotion from Wood I to Silver IV for three tiers where the ladder has one, and reported
+a game worth 42 LP as +842.
 
 The dashboard picks the ladder from the match's mode, so a Classic game shows Classic
 rank and everything else shows Solo/Duo. Ranks are read for every player in the game, not
@@ -322,8 +331,18 @@ appear without the asterisk.
 
 **LP change** is recorded per match. Promotion and demotion are handled — a promotion
 resets you to low LP in the new tier, which naive subtraction would report as a large
-loss. It only appears for games on a ranked ladder, so Classic games show it and
-ARAM/Mayhem do not.
+loss. Tier, division and LP are folded into a single position on that ladder and the two
+positions subtracted, which is why the ladder's real shape matters: a tier counted that
+the ladder does not have is worth 400 phantom LP, and it is invisible until somebody is
+promoted across it. Master, Grandmaster and Challenger are treated as one rung for the
+same reason — they are one pool of LP with two cutoffs drawn through it, and crossing a
+cutoff moves nobody's points. LP change only appears for games on a ranked ladder, so
+Classic games show it and ARAM/Mayhem do not.
+
+No LP change is ever reported by the client, which means none of them are lost data. If
+the arithmetic behind them turns out to be wrong, the rank observations they were derived
+from are still on record and every affected game is simply worked out again on the next
+launch.
 
 The rank you held *going into* a game is written the moment the game is captured, before
 the new LP has necessarily landed. That ordering matters: the first version worked the

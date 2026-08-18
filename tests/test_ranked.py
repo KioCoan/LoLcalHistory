@@ -97,10 +97,75 @@ class TestPointsDiff:
         after = Rank(SOLO, "PLATINUM", "I", 75)
         assert ranked.diff_points(before, after) < 0
 
-    def test_tier_promotion_across_names(self):
+    def test_the_promotion_that_read_as_842(self):
+        """The report. Wood I 80 LP won a game and landed Silver IV 22 LP.
+
+        Both ladders shared one list of tiers, and Iron and Bronze sat between
+        Wood and Silver in it. Classic has neither, so a one-tier promotion was
+        charged for three and a 42 point win was recorded as +842.
+
+        42 is not a guess: 80 + 42 is 122, which caps at 100 and carries the
+        remaining 22 into the new tier — exactly the rank that was shown. The
+        same account's other wins that session were +42, +42, +40 and +39.
+        """
+        before = Rank(CLASSIC, "WOOD", "I", 80)
+        after = Rank(CLASSIC, "SILVER", "IV", 22)
+        assert ranked.diff_points(before, after) == 42
+
+    def test_the_classic_ladder_has_no_gaps_in_it(self):
+        """Every step up Classic costs the same, which is what went wrong.
+
+        A tier the ladder does not have, sitting between two it does, is
+        invisible until someone is promoted across it.
+        """
+        tiers = ranked.LADDER_TIERS[CLASSIC]
+        steps = [
+            ranked.diff_points(Rank(CLASSIC, low, "I", 100), Rank(CLASSIC, high, "IV", 0))
+            for low, high in zip(tiers, tiers[1:])
+        ]
+        assert steps == [0] * len(steps), dict(zip(zip(tiers, tiers[1:]), steps))
+
+    def test_the_standard_ladder_has_no_gaps_either(self):
+        tiers = [t for t in ranked.LADDER_TIERS[SOLO] if t != "GRANDMASTER"]
+        tiers = [t for t in tiers if t != "CHALLENGER"]
+        steps = [
+            ranked.diff_points(Rank(SOLO, low, "I", 100), Rank(SOLO, high, "IV", 0))
+            for low, high in zip(tiers, tiers[1:])
+        ]
+        assert steps == [0] * len(steps), dict(zip(zip(tiers, tiers[1:]), steps))
+
+    def test_the_two_ladders_are_not_the_same_ladder(self):
+        """Wood to Silver is one step on Classic and does not exist elsewhere."""
+        assert "IRON" not in ranked.LADDER_TIERS[CLASSIC]
+        assert "BRONZE" not in ranked.LADDER_TIERS[CLASSIC]
+        assert "EMERALD" not in ranked.LADDER_TIERS[CLASSIC]
+        assert "LEGEND" not in ranked.LADDER_TIERS[SOLO]
+
+    def test_classic_tops_out_at_legend(self):
+        before = Rank(CLASSIC, "DIAMOND", "I", 91)
+        after = Rank(CLASSIC, "LEGEND", "NA", 12)
+        assert ranked.diff_points(before, after) == 21
+
+    def test_the_apex_tiers_are_one_pool_of_points(self):
+        """Master, Grandmaster and Challenger are cutoffs, not tiers.
+
+        Crossing one moves nobody's LP, so charging a tier for the crossing
+        invents 400 points — the same fault as the merged ladder, one rung up.
+        """
+        at_500 = Rank(SOLO, "MASTER", "NA", 500)
+        assert ranked.diff_points(at_500, Rank(SOLO, "GRANDMASTER", "NA", 500)) == 0
+        assert ranked.diff_points(at_500, Rank(SOLO, "CHALLENGER", "NA", 540)) == 40
+
+    def test_reaching_the_apex_still_counts_what_was_won(self):
+        before = Rank(SOLO, "DIAMOND", "I", 88)
+        after = Rank(SOLO, "MASTER", "NA", 8)
+        assert ranked.diff_points(before, after) == 20
+
+    def test_a_position_impossible_on_its_ladder_invents_nothing(self):
+        """Iron on the Classic ladder cannot be placed, so it is not placed."""
         before = Rank(CLASSIC, "WOOD", "I", 99)
         after = Rank(CLASSIC, "IRON", "IV", 8)
-        assert ranked.diff_points(before, after) > 0
+        assert ranked.diff_points(before, after) != 401
 
     def test_no_change_is_zero(self):
         rank = Rank(SOLO, "EMERALD", "II", 41)

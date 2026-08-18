@@ -180,20 +180,49 @@ def diff_points(before: Rank | None, after: Rank | None) -> int | None:
     return _absolute(after) - _absolute(before)
 
 
-# Ordered low to high. Classic's ladder invents its own names, so both sets live
-# here; anything unknown falls back to comparing LP alone.
-_TIER_ORDER = [
-    "SALT", "WOOD", "IRON", "BRONZE", "SILVER", "GOLD", "PLATINUM", "EMERALD",
-    "DIAMOND", "MASTER", "GRANDMASTER", "CHALLENGER",
-]
+# Each ladder has its own tiers, low to high. These are not one ladder under two
+# sets of names: League Classic has no Iron, Bronze or Emerald, and tops out at
+# Legend rather than running Master through Challenger.
+#
+# Holding both in one list is what this exists to prevent. Iron and Bronze sat
+# between Wood and Silver, so a Classic promotion from Wood I to Silver IV was
+# charged for three tiers where the ladder has one, and a game worth 42 points
+# was recorded as +842. Anything unknown still falls back to comparing LP alone.
+_STANDARD_TIERS = (
+    "IRON", "BRONZE", "SILVER", "GOLD", "PLATINUM", "EMERALD", "DIAMOND",
+    "MASTER", "GRANDMASTER", "CHALLENGER",
+)
+_CLASSIC_TIERS = ("SALT", "WOOD", "SILVER", "GOLD", "PLATINUM", "DIAMOND", "LEGEND")
+
+LADDER_TIERS = {SOLO: _STANDARD_TIERS, FLEX: _STANDARD_TIERS, CLASSIC: _CLASSIC_TIERS}
+
+# Master, Grandmaster and Challenger are not three tiers' worth of points. They
+# are one pool of LP with two cutoffs drawn through it, so crossing a cutoff
+# moves nobody's LP and they share a rung. Giving each its own would invent 400
+# points per crossing, exactly as the merged ladder did.
+#
+# Whether Classic's Legend works the same way is not known — no account here has
+# reached it. If it turns out to share Diamond's pool, it belongs in this map.
+_SHARES_RUNG_WITH = {"GRANDMASTER": "MASTER", "CHALLENGER": "MASTER"}
+
 _DIVISION_ORDER = {"IV": 0, "III": 1, "II": 2, "I": 3}
+_POINTS_PER_DIVISION = 100
+_DIVISIONS_PER_TIER = 4
 
 
 def _absolute(rank: Rank) -> int:
-    """A single comparable number for a tier/division/LP position."""
+    """A single comparable number for a tier/division/LP position.
+
+    Only meaningful against another position on the same ladder: the rungs are
+    counted from that ladder's own bottom tier, and two ladders do not have the
+    same number of them.
+    """
+    tiers = LADDER_TIERS.get(rank.queue_type, _STANDARD_TIERS)
+    tier = (rank.tier or "").upper()
     try:
-        tier_index = _TIER_ORDER.index((rank.tier or "").upper())
+        tier_index = tiers.index(_SHARES_RUNG_WITH.get(tier, tier))
     except ValueError:
         return rank.league_points or 0
     division_index = _DIVISION_ORDER.get((rank.division or "").upper(), 0)
-    return (tier_index * 400) + (division_index * 100) + (rank.league_points or 0)
+    rungs = tier_index * _DIVISIONS_PER_TIER + division_index
+    return rungs * _POINTS_PER_DIVISION + (rank.league_points or 0)
